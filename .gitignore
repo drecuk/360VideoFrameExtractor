@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Runtime videos and extracted frames
+uploaded_videos/*
+!uploaded_videos/.gitkeep
+
+# Local working files
+Backup/
+gemini_*.txt
+run_ffmpeg_manually.sh
+
+# Build output
+build/
+dist/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+Thumbs.db
