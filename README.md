@@ -19,7 +19,7 @@ The frame extractor is used for work presented in the following accepted paper:
 | Profile | Link |
 | --- | --- |
 | LinkedIn | [linkedin.com/in/eugenecc](https://www.linkedin.com/in/eugenecc) |
-| Google Scholar | [Professor Eugene Ch'ng's publications](https://scholar.google.com/citations?user=AcYUcdEAAAAJ&hl=e) |
+| Google Scholar | [Eugene Ch'ng's publications](https://scholar.google.com/citations?user=AcYUcdEAAAAJ&hl=e) |
 | GitHub | [github.com/drecuk](https://github.com/drecuk) |
 
 ## Features
