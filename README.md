@@ -8,6 +8,10 @@
 
 The application provides interactive camera-layout visualisation, single and batch extraction, sky-content filtering, and partial-blur detection. FFmpeg and FFprobe are used for video processing, while COLMAP is checked as part of the wider 3D reconstruction workflow.
 
+The frame extractor is used for work presented in the following accepted paper:
+
+> Ch'ng, E. (2026). Analysis of Multi-Modal Semantic Masking, Inpainting for 3D Reconstruction and Visualisation of Heritage Sites. In *Proceedings of the 23rd Eurographics Workshop on Graphics and Cultural Heritage (GCH 2026)*, Universitat Politècnica de Catalunya, Barcelona, Catalonia, 2–5 November 2026. Accepted paper.
+
 ## Author
 
 **Authored by Professor Eugene Ch'ng**
