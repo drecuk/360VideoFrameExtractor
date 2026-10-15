@@ -28,7 +28,10 @@ function Refresh-Path {
 }
 
 function Add-UserPathEntry {
-    param([string]$PathEntry)
+    param(
+        [string]$PathEntry,
+        [switch]$Prepend
+    )
 
     if ([string]::IsNullOrWhiteSpace($PathEntry)) {
         return
@@ -48,41 +51,42 @@ function Add-UserPathEntry {
         }
     }
 
-    $AlreadyExists = $false
-    foreach ($Part in $UserParts) {
-        if ($Part.TrimEnd("\").Equals($CleanEntry, [StringComparison]::OrdinalIgnoreCase)) {
-            $AlreadyExists = $true
-            break
-        }
+    $UserPartsWithoutEntry = @($UserParts | Where-Object {
+        -not $_.TrimEnd("\").Equals($CleanEntry, [StringComparison]::OrdinalIgnoreCase)
+    })
+
+    if ($Prepend) {
+        $NewUserPath = (@($CleanEntry) + $UserPartsWithoutEntry) -join ";"
+    }
+    else {
+        $NewUserPath = ($UserPartsWithoutEntry + $CleanEntry) -join ";"
     }
 
-    if (-not $AlreadyExists) {
-        $NewUserPath = ($UserParts + $CleanEntry) -join ";"
+    if ($NewUserPath -ne $CurrentUserPath) {
         [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
-        Write-Host "Added to user PATH: $CleanEntry"
+        Write-Host "Updated user PATH: $CleanEntry"
     }
 
-    $CurrentSessionParts = $env:Path -split ";" | Where-Object {
+    $CurrentSessionParts = @($env:Path -split ";" | Where-Object {
         -not [string]::IsNullOrWhiteSpace($_)
-    }
-    $InCurrentSession = $false
+    })
+    $SessionPartsWithoutEntry = @($CurrentSessionParts | Where-Object {
+        -not $_.TrimEnd("\").Equals($CleanEntry, [StringComparison]::OrdinalIgnoreCase)
+    })
 
-    foreach ($Part in $CurrentSessionParts) {
-        if ($Part.TrimEnd("\").Equals($CleanEntry, [StringComparison]::OrdinalIgnoreCase)) {
-            $InCurrentSession = $true
-            break
-        }
+    if ($Prepend) {
+        $env:Path = (@($CleanEntry) + $SessionPartsWithoutEntry) -join ";"
     }
-
-    if (-not $InCurrentSession) {
-        $env:Path = "$env:Path;$CleanEntry"
+    else {
+        $env:Path = ($SessionPartsWithoutEntry + $CleanEntry) -join ";"
     }
 }
 
 function Install-WingetPackage {
     param(
         [string]$PackageId,
-        [string]$FriendlyName
+        [string]$FriendlyName,
+        [switch]$Force
     )
 
     if (-not (Test-CommandAvailable "winget")) {
@@ -90,7 +94,14 @@ function Install-WingetPackage {
     }
 
     Write-Host "`nInstalling $FriendlyName..."
-    & winget install --id $PackageId --exact --source winget --accept-source-agreements --accept-package-agreements --silent
+    $WingetArguments = @(
+        "install", "--id", $PackageId, "--exact", "--source", "winget",
+        "--accept-source-agreements", "--accept-package-agreements", "--silent"
+    )
+    if ($Force) {
+        $WingetArguments += "--force"
+    }
+    & winget @WingetArguments
 
     if ($LASTEXITCODE -ne 0) {
         throw "$FriendlyName could not be installed automatically. Try installing it manually, then run install_windows.bat again."
@@ -119,7 +130,38 @@ function Add-KnownPythonPaths {
     }
 }
 
-function Add-KnownFfmpegPaths {
+function Test-FfmpegV360 {
+    param([string]$FfmpegPath)
+
+    if ([string]::IsNullOrWhiteSpace($FfmpegPath) -or -not (Test-Path $FfmpegPath)) {
+        return $false
+    }
+
+    try {
+        $FilterOutput = & $FfmpegPath -hide_banner -filters 2>&1 | Out-String
+        return ($LASTEXITCODE -eq 0 -and $FilterOutput -match "(?m)(^|\s)v360(\s|$)")
+    }
+    catch {
+        return $false
+    }
+}
+
+function Find-V360Ffmpeg {
+    $CandidatePaths = @()
+    $ConfiguredPathFile = Join-Path $ProjectDir ".ffmpeg_path"
+
+    if (Test-Path $ConfiguredPathFile) {
+        $ConfiguredPath = (Get-Content $ConfiguredPathFile -Raw).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($ConfiguredPath)) {
+            $CandidatePaths += $ConfiguredPath
+        }
+    }
+
+    $PathCommand = Get-Command "ffmpeg" -CommandType Application -ErrorAction SilentlyContinue
+    if ($PathCommand) {
+        $CandidatePaths += $PathCommand.Source
+    }
+
     $CandidateRoots = @(
         (Join-Path $env:ProgramFiles "ffmpeg"),
         (Join-Path $env:ProgramFiles "Gyan\FFmpeg"),
@@ -131,14 +173,34 @@ function Add-KnownFfmpegPaths {
             continue
         }
 
-        $FfmpegExe = Get-ChildItem -Path $Root -Recurse -Filter "ffmpeg.exe" -File -ErrorAction SilentlyContinue |
-            Select-Object -First 1
+        $CandidatePaths += Get-ChildItem -Path $Root -Recurse -Filter "ffmpeg.exe" -File -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
+    }
 
-        if ($FfmpegExe) {
-            Add-UserPathEntry $FfmpegExe.DirectoryName
-            return
+    $Seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($FfmpegPath in $CandidatePaths) {
+        if (-not ($Seen.Add($FfmpegPath))) {
+            continue
+        }
+
+        if (-not (Test-FfmpegV360 $FfmpegPath)) {
+            continue
+        }
+
+        $FfmpegExe = Get-Item $FfmpegPath
+        $FfprobePath = Join-Path $FfmpegExe.DirectoryName "ffprobe.exe"
+        if (-not (Test-Path $FfprobePath)) {
+            continue
+        }
+
+        return [pscustomobject]@{
+            Ffmpeg = $FfmpegExe.FullName
+            Ffprobe = $FfprobePath
+            Directory = $FfmpegExe.DirectoryName
         }
     }
+
+    return $null
 }
 
 function Get-PythonInvocation {
@@ -189,23 +251,43 @@ function Ensure-Python {
 }
 
 function Ensure-Ffmpeg {
-    if ((Test-CommandAvailable "ffmpeg") -and (Test-CommandAvailable "ffprobe")) {
-        Write-Host "FFmpeg and FFprobe found."
+    $Selection = Find-V360Ffmpeg
+    if ($Selection) {
+        Add-UserPathEntry $Selection.Directory -Prepend
+        [System.IO.File]::WriteAllText(
+            (Join-Path $ProjectDir ".ffmpeg_path"),
+            $Selection.Ffmpeg,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        Write-Host "Compatible FFmpeg found: $($Selection.Ffmpeg)"
         return
     }
 
     if (-not $AutoInstallDependencies) {
-        Write-Warning "FFmpeg and FFprobe were not found."
+        Write-Warning "A complete FFmpeg build with FFprobe and the v360 filter was not found."
         return
     }
 
-    Install-WingetPackage -PackageId "Gyan.FFmpeg" -FriendlyName "FFmpeg"
-    Add-KnownFfmpegPaths
+    if (Test-CommandAvailable "ffmpeg") {
+        $ExistingFfmpeg = (Get-Command "ffmpeg" -CommandType Application).Source
+        Write-Warning "The existing FFmpeg is incompatible because it lacks v360 or its matching FFprobe: $ExistingFfmpeg"
+    }
+
+    Install-WingetPackage -PackageId "Gyan.FFmpeg" -FriendlyName "the full FFmpeg build" -Force
     Refresh-Path
 
-    if (-not ((Test-CommandAvailable "ffmpeg") -and (Test-CommandAvailable "ffprobe"))) {
-        Write-Warning "FFmpeg was installed, but Windows still cannot find it. Close this window, reopen it and run install_windows.bat again."
+    $Selection = Find-V360Ffmpeg
+    if (-not $Selection) {
+        throw "FFmpeg was installed, but no build with FFprobe and the v360 filter could be verified. Close this window and run install_windows.bat again."
     }
+
+    Add-UserPathEntry $Selection.Directory -Prepend
+    [System.IO.File]::WriteAllText(
+        (Join-Path $ProjectDir ".ffmpeg_path"),
+        $Selection.Ffmpeg,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    Write-Host "Compatible FFmpeg selected: $($Selection.Ffmpeg)"
 }
 
 function Install-ColmapFromGithub {
@@ -324,9 +406,8 @@ Write-Host "`nChecking external applications..."
 Write-Host "`nInstallation complete."
 Write-Host "Start the application with: .\run_windows.bat"
 
-if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue) -or
-    -not (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
-    Write-Warning "FFmpeg is required for frame extraction. If it was just installed, close this window and run install_windows.bat again."
+if (-not (Find-V360Ffmpeg)) {
+    Write-Warning "A complete FFmpeg build with FFprobe and v360 is required for frame extraction. Rerun install_windows.bat and allow dependency installation."
 }
 
 if (-not (Get-Command colmap -ErrorAction SilentlyContinue)) {

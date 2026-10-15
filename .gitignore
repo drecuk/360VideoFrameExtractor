@@ -16,6 +16,7 @@ env/
 .env.*
 !.env.example
 .streamlit/secrets.toml
+.ffmpeg_path
 
 # Runtime videos and extracted frames
 uploaded_videos/*
@@ -25,6 +26,8 @@ uploaded_videos/*
 Backup/
 gemini_*.txt
 run_ffmpeg_manually.sh
+*_run_ffmpeg_manually.txt
+*_ffmpeg_diagnostic.log
 
 # Build output
 build/

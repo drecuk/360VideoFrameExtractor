@@ -19,6 +19,8 @@
 import shutil
 import sys
 
+from utils_ffmpeg import find_v360_ffmpeg, resolve_ffprobe_executable
+
 
 #   ##########################################################
 #   CHECK SYSTEM DEPENDENCIES
@@ -35,19 +37,19 @@ def check_dependencies():
     # create an empty list for recording missing dependencies
     missing_deps = []
 
-    # --------------------------- CHECK FFMPEG
-    # FFmpeg is required for video processing and frame extraction
-    if shutil.which("ffmpeg") is None:
-        missing_deps.append("ffmpeg")
+    # --------------------------- CHECK FFMPEG + V360
+    # Perspective extraction requires a full build containing the v360 filter.
+    ffmpeg_path, _ = find_v360_ffmpeg()
+    if ffmpeg_path is None:
+        if shutil.which("ffmpeg") is None:
+            missing_deps.append("ffmpeg")
+        else:
+            missing_deps.append("ffmpeg-v360")
 
-    # --------------------------- CHECK FFPROBE
-    # FFprobe is used for checking video information and duration
-    # note that FFprobe is normally installed together with FFmpeg
-    if shutil.which("ffprobe") is None:
-
-        # avoid reporting FFprobe separately when FFmpeg is already missing
-        if "ffmpeg" not in missing_deps:
-            missing_deps.append("ffprobe")
+    # --------------------------- CHECK MATCHING FFPROBE
+    # Prefer FFprobe shipped beside the selected compatible FFmpeg executable.
+    if ffmpeg_path and resolve_ffprobe_executable(ffmpeg_path) is None:
+        missing_deps.append("ffprobe")
 
     # --------------------------- CHECK COLMAP
     # COLMAP is required for image-based 3D reconstruction
@@ -82,7 +84,7 @@ def get_os_instructions(missing_deps):
         instructions += "**For macOS (using Terminal):**\n"
 
         # install FFmpeg which normally includes FFprobe
-        if "ffmpeg" in missing_deps or "ffprobe" in missing_deps:
+        if any(dep in missing_deps for dep in ("ffmpeg", "ffmpeg-v360", "ffprobe")):
             instructions += "- `brew install ffmpeg`\n"
 
         # install COLMAP using Homebrew
@@ -98,7 +100,7 @@ def get_os_instructions(missing_deps):
         instructions += "- `sudo apt-get update`\n"
 
         # install FFmpeg which normally includes FFprobe
-        if "ffmpeg" in missing_deps or "ffprobe" in missing_deps:
+        if any(dep in missing_deps for dep in ("ffmpeg", "ffmpeg-v360", "ffprobe")):
             instructions += "- `sudo apt-get install ffmpeg`\n"
 
         # install COLMAP using APT
@@ -111,8 +113,11 @@ def get_os_instructions(missing_deps):
         instructions += "**For Windows (using Command Prompt / PowerShell):**\n"
 
         # install FFmpeg which normally includes FFprobe
-        if "ffmpeg" in missing_deps or "ffprobe" in missing_deps:
-            instructions += "- `winget install ffmpeg`\n"
+        if any(dep in missing_deps for dep in ("ffmpeg", "ffmpeg-v360", "ffprobe")):
+            instructions += (
+                "- Rerun `install_windows.bat`, choose automatic dependency "
+                "installation, or run `winget install --id Gyan.FFmpeg --exact --force`.\n"
+            )
 
         # COLMAP must be downloaded and added to the system PATH
         if "colmap" in missing_deps:

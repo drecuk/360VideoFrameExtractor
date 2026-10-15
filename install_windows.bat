@@ -19,7 +19,7 @@ echo ---------------------------------------------------
 echo This installer will try to install everything needed:
 echo.
 echo - Python 3.12
-echo - FFmpeg and FFprobe
+echo - Full FFmpeg with v360 and FFprobe
 echo - COLMAP
 echo - Streamlit and the Python packages used by the app
 echo - PyYAML for frame sidecar metadata files

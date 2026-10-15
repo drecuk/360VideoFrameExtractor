@@ -16,6 +16,8 @@
 #   ##########################################################
 
 import streamlit as st
+import io
+import inspect
 import os
 from utils_viz import generate_360_splits
 from utils_ffmpeg import extract_360_frames
@@ -28,6 +30,72 @@ from PIL import Image # display image thumbnails
 
 
 st.set_page_config(page_title="360 Frame Extractor", layout="wide")
+
+GALLERY_PAGE_SIZE = 64
+GALLERY_COLUMNS = 8
+GALLERY_THUMBNAIL_SIZE = 160
+GALLERY_SCROLL_HEIGHT = 720
+
+
+@st.cache_data(show_spinner=False, max_entries=1024)
+def create_image_thumbnail(
+    image_path,
+    file_mtime_ns,
+    file_size,
+    max_dimension=640,
+):
+    """Create a cached JPEG thumbnail, invalidated when the source file changes."""
+    # File metadata is intentionally part of the cache key.
+    _ = file_mtime_ns, file_size
+
+    try:
+        with Image.open(image_path) as image:
+            image.load()
+            image.thumbnail(
+                (max_dimension, max_dimension),
+                Image.Resampling.LANCZOS,
+            )
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+
+            output = io.BytesIO()
+            image.save(output, format="JPEG", quality=85, optimize=True)
+            return output.getvalue(), None
+    except (OSError, SyntaxError, ValueError) as error:
+        return None, str(error)
+
+
+def display_thumbnail_safely(
+    image_path,
+    max_dimension=640,
+    **image_options,
+):
+    """Display a cached thumbnail without allowing a damaged file to stop a run."""
+    try:
+        file_stat = os.stat(image_path)
+    except OSError:
+        st.warning(f"Image is missing: `{os.path.basename(image_path)}`")
+        return False
+
+    thumbnail, _error = create_image_thumbnail(
+        image_path,
+        file_stat.st_mtime_ns,
+        file_stat.st_size,
+        max_dimension,
+    )
+    if thumbnail is None:
+        st.warning(
+            f"Skipped incomplete or unreadable image: `{os.path.basename(image_path)}`"
+        )
+        return False
+
+    st.image(thumbnail, **image_options)
+    return True
+
+
+def select_gallery_image(image_filename):
+    """Update the selected gallery image before Streamlit performs its rerun."""
+    st.session_state['selected_gallery_image'] = image_filename
 
 #   ##########################################################
 #   CUSTOM APPLICATION THEME
@@ -71,6 +139,50 @@ def apply_theme(theme_choice):
     button[data-baseweb="tab"] span {{
         color: {text_color} !important;
     }}
+
+    /* Preserve the classic red active underline on native Streamlit tabs. */
+    div[data-baseweb="tab-highlight"] {{
+        background-color: #ff4b4b !important;
+    }}
+
+    /* On older Streamlit versions, make the lazy navigation look like tabs
+       instead of a segmented pill control. */
+    div[data-testid="stButtonGroup"] > div[data-baseweb="button-group"] {{
+        border-bottom: 1px solid rgba(128, 128, 128, 0.35) !important;
+        column-gap: 0 !important;
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+    }}
+
+    div[data-testid="stButtonGroup"] button {{
+        background: transparent !important;
+        border: 0 !important;
+        border-bottom: 3px solid transparent !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+        flex: 0 0 auto !important;
+        max-width: none !important;
+        min-height: 3rem !important;
+        padding: 0.65rem 1rem !important;
+        white-space: nowrap !important;
+        width: auto !important;
+    }}
+
+    div[data-testid="stButtonGroup"] button:hover {{
+        border-bottom-color: rgba(255, 75, 75, 0.45) !important;
+    }}
+
+    div[data-testid="stButtonGroup"] button[kind$="Active"],
+    div[data-testid="stButtonGroup"] button[data-testid$="Active"] {{
+        border-bottom-color: #ff4b4b !important;
+    }}
+
+    /* The metadata summary is intentionally compact beside the preview. */
+    div[data-testid="stCode"] pre,
+    div[data-testid="stCode"] code {{
+        font-size: 0.72rem !important;
+        line-height: 1.35 !important;
+    }}
     </style>
     """
     st.markdown(css, unsafe_allow_html=True)
@@ -107,14 +219,44 @@ st.divider()
 
 # --------------------------- MAIN APPLICATION TABS
 # divide the workflow into welcome, upload, extraction and filtering stages
-tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+TAB_LABELS = [
     "0. Welcome",
     "1. Upload",
     "2. Extraction",
     "3. Remove Sky Photos",
     "4. Remove Blurry Images",
     "5. Browse Metadata"
-])
+]
+
+
+def format_fallback_tab_label(label):
+    """Escape the numbered prefix so Markdown keeps it visible."""
+    return label.replace(".", r"\.", 1)
+
+SUPPORTS_LAZY_TABS = "on_change" in inspect.signature(st.tabs).parameters
+
+if SUPPORTS_LAZY_TABS:
+    tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        TAB_LABELS,
+        key="main_tabs",
+        on_change="rerun",
+    )
+    fallback_active_tab = None
+else:
+    # Streamlit before 1.55 cannot track the active st.tabs tab. Use a
+    # segmented navigation control so hidden sections remain genuinely lazy.
+    fallback_active_tab = st.segmented_control(
+        "Application section",
+        TAB_LABELS,
+        default=TAB_LABELS[0],
+        format_func=format_fallback_tab_label,
+        key="main_tabs_legacy",
+        label_visibility="collapsed",
+        width="stretch",
+    )
+    tab0, tab1, tab2, tab3, tab4, tab5 = (
+        st.container() for _ in TAB_LABELS
+    )
 
 #   ##########################################################
 #   TAB 0: WELCOME AND SYSTEM CHECK
@@ -123,7 +265,7 @@ tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
 #   workflow instructions for the 360 extraction toolkit
 #   ##########################################################
 
-with tab0:
+def render_welcome_tab():
     st.header("Welcome")
 
     # --- SYSTEM DEPENDENCY CHECK ---
@@ -169,6 +311,29 @@ with tab0:
     ### 📷 Insta360 Studio Export Settings
     *For 3D Splatting, NeRF, and Photogrammetry*
 
+    #### Insta360 X6 Recommended Preset
+
+    Use this model-specific preset when exporting Insta360 X6 footage:
+
+    | Setting | Recommendation |
+    | --- | --- |
+    | Resolution | **8K (7680 × 3840)** |
+    | Frame Rate | **30 fps** (match the original recording) |
+    | Bitrate | **200 Mbps** to minimise re-encoding artefacts |
+    | Codec | **H.265 (HEVC)** |
+    | Colour Space | **Rec.709, 10-bit** when the source was recorded in 10-bit |
+    | Bottom Stitching Optimisation | **ON**, provided it introduces no geometric distortion |
+    | APMP | **OFF** |
+    | Export Format | **MP4, 360° equirectangular** |
+    | FFmpeg Frame Extraction | **PNG at 3–5 fps** |
+    | Stabilisation | Test **OFF** first for geometric consistency |
+
+    > **Priority:** Maximum resolution, consistent geometry, and minimal compression artefacts.
+
+    In **Tab 2: Extraction**, select **Frames per second** and choose **3–5 fps** to apply the recommended PNG sampling rate.
+
+    #### General Insta360 Guidance
+
     * **Export Type:** 360° Video
     * **Media Type:** Video (Avoid Video Original)
         * *Why:* This applies the vital stitching, horizon calibration, and lens distortion profile needed to transform raw, dual-fisheye data into a flat equirectangular projection that FFmpeg and structure-from-motion (SfM) software can interpret. Avoid "Video Original," as splatting engines cannot align raw, unstitched dual-lens circles.
@@ -200,7 +365,7 @@ with tab0:
 #   within the local uploaded_videos folder for processing
 #   ##########################################################
 
-with tab1:
+def render_upload_tab():
     st.header("Upload Video")
     st.write("Upload a folder with your 360 videos or drag and drop.")
 
@@ -240,7 +405,7 @@ with tab1:
 #   Supports individual and batch video extraction
 #   ##########################################################
 
-with tab2:
+def render_extraction_tab():
     st.header("Extraction Settings")
 
     # create separate columns for settings and 3D visualisation
@@ -248,13 +413,36 @@ with tab2:
 
     with col_settings:
         # --------------------------- EXTRACTION SETTINGS
-        # configure sampling interval, camera views, field of view and resolution
-        interval = st.slider("EXTRACT_EVERY_N_SECONDS", 1, 30, 2)
+        # configure sampling rate, camera views, field of view and resolution
+        sampling_mode = st.selectbox(
+            "FRAME_SAMPLING_MODE",
+            ["Frames per second", "Seconds between frames"],
+            help="Use 3–5 fps for the recommended Insta360 X6 photogrammetry workflow.",
+        )
+
+        if sampling_mode == "Frames per second":
+            sample_fps = st.slider(
+                "FRAME_EXTRACTION_FPS",
+                min_value=3,
+                max_value=5,
+                value=3,
+                help="Insta360 X6 recommendation: extract PNG frames at 3–5 fps.",
+            )
+            interval_seconds = 1.0 / sample_fps
+            st.caption(f"PNG sampling interval: every {interval_seconds:.3f} seconds")
+        else:
+            interval_seconds = st.slider(
+                "EXTRACT_EVERY_N_SECONDS",
+                min_value=1,
+                max_value=30,
+                value=2,
+            )
+
         h_splits = st.slider("HORIZONTAL_SPLITS", 4, 64, 8)
         inc_nadir = st.checkbox("INCLUDE_NADIR_ZENITH", value=True)
         inc_45 = st.checkbox("INCLUDE_45_PITCH", value=True)
         fov = st.number_input("FIELD_OF_VIEW", value=90)
-        res = st.slider("IMAGE_RESOLUTION", 512, 4096, 1024, step=256)
+        res = st.slider("IMAGE_RESOLUTION", 512, 8192, 1024, step=256)
 
         # --------------------------- FIND AVAILABLE VIDEOS
         # load supported videos from the local uploaded_videos folder
@@ -278,8 +466,8 @@ with tab2:
     with col_viz:
         # --------------------------- CAMERA RIG VISUALISATION
         # update the interactive 3D camera layout when settings change
-        fig = generate_360_splits(interval, h_splits, inc_nadir, inc_45, fov, res)
-        st.plotly_chart(fig, use_container_width=True)
+        fig = generate_360_splits(interval_seconds, h_splits, inc_nadir, inc_45, fov, res)
+        st.plotly_chart(fig, width="stretch")
 
     # --------------------------- SINGLE EXTRACTION
     # extract perspective frames from the selected video
@@ -298,7 +486,7 @@ with tab2:
             status_text = st.empty()
 
             # run FFmpeg extraction using the selected camera settings
-            extract_360_frames(vid_path, out_dir, vid_clean_name, interval, h_splits, inc_nadir, inc_45, fov, res, progress_bar, status_text)
+            extract_360_frames(vid_path, out_dir, vid_clean_name, interval_seconds, h_splits, inc_nadir, inc_45, fov, res, progress_bar, status_text)
 
             # remember the latest output folder for the folder viewer
             st.session_state['last_output_dir'] = os.path.abspath(out_dir)
@@ -326,7 +514,7 @@ with tab2:
                 file_status_text = st.empty()
 
                 # extract perspective frames from the current video
-                extract_360_frames(vid_path, out_dir, vid_clean_name, interval, h_splits, inc_nadir, inc_45, fov, res, file_progress_bar, file_status_text)
+                extract_360_frames(vid_path, out_dir, vid_clean_name, interval_seconds, h_splits, inc_nadir, inc_45, fov, res, file_progress_bar, file_status_text)
 
                 # update progress across the complete video batch
                 overall_progress.progress((idx + 1) / len(available_videos))
@@ -351,7 +539,7 @@ with tab2:
 #   Images selected for removal are moved into skies_only
 #   ##########################################################
 
-with tab3:
+def render_sky_tab():
     st.header("Remove Sky Photos")
     st.write("Detect and filter out frames that are predominantly sky/empty space.")
 
@@ -440,8 +628,8 @@ with tab3:
                 col = cols[idx % 4]
                 with col:
                     # display the image thumbnail and detected sky percentage
-                    st.image(img_data['path'], use_container_width=True)
-                    st.caption(f"{img_data['pct']:.1f}% Sky")
+                    if display_thumbnail_safely(img_data['path'], width="stretch"):
+                        st.caption(f"{img_data['pct']:.1f}% Sky")
 
                     # keep the image by removing it from the pending move list
                     if st.button("❌ Keep", key=f"keep_{img_data['path']}"):
@@ -457,7 +645,7 @@ with tab3:
 #   Images selected for removal are moved into blurry_only
 #   ##########################################################
 
-with tab4:
+def render_blurry_tab():
     st.header("Remove Blurry Images")
     st.write("Detect and filter out frames that contain blurry sectors (e.g., motion blur).")
 
@@ -556,8 +744,8 @@ with tab4:
                 col = cols[idx % 4]
                 with col:
                     # display the image thumbnail and failed sector count
-                    st.image(img_data['path'], use_container_width=True)
-                    st.caption(f"Failed: {img_data['bad_chunks']}/{img_data['total_chunks']} sectors")
+                    if display_thumbnail_safely(img_data['path'], width="stretch"):
+                        st.caption(f"Failed: {img_data['bad_chunks']}/{img_data['total_chunks']} sectors")
 
                     # keep the image by removing it from the pending move list
                     if st.button("❌ Keep", key=f"keep_blur_{img_data['path']}"):
@@ -571,7 +759,7 @@ with tab4:
 #   and view the associated YAML sidecar metadata.
 #   ##########################################################
 
-with tab5:
+def render_metadata_tab():
     st.header("Browse Metadata")
     st.write("Select an extracted folder to browse the images and view their generated YAML metadata side-by-side.")
 
@@ -613,23 +801,55 @@ with tab5:
             with col_gallery:
                 st.write("**Image Gallery (Click 'Select' to view metadata)**")
 
-                # Create a 4-column scrolling gallery
-                gallery_cols = st.columns(4)
+                total_pages = (
+                    len(image_files) + GALLERY_PAGE_SIZE - 1
+                ) // GALLERY_PAGE_SIZE
+                page_number = st.number_input(
+                    "Gallery page",
+                    min_value=1,
+                    max_value=total_pages,
+                    value=1,
+                    step=1,
+                    key=f"gallery_page_{target_browse_folder}",
+                )
+                page_start = (page_number - 1) * GALLERY_PAGE_SIZE
+                page_end = min(page_start + GALLERY_PAGE_SIZE, len(image_files))
+                page_image_files = image_files[page_start:page_end]
+                st.caption(
+                    f"Showing images {page_start + 1}–{page_end} of "
+                    f"{len(image_files)}"
+                )
 
-                for idx, img_file in enumerate(image_files):
-                    g_col = gallery_cols[idx % 4]
-                    with g_col:
-                        img_path = os.path.join(full_browse_path, img_file)
-                        st.image(img_path, use_container_width=True)
+                st.caption("Scroll inside the thumbnail gallery to browse this page.")
 
-                        # Use a primary button if it is currently selected, else secondary
-                        is_selected = st.session_state['selected_gallery_image'] == img_file
-                        btn_type = "primary" if is_selected else "secondary"
-                        btn_label = "Selected" if is_selected else "Select"
+                # Keep the selected-image panel stationary by giving the thumbnail
+                # grid its own vertical scroll area.
+                with st.container(height=GALLERY_SCROLL_HEIGHT, border=True):
+                    gallery_cols = st.columns(GALLERY_COLUMNS)
 
-                        if st.button(btn_label, key=f"select_{img_file}", type=btn_type, use_container_width=True):
-                            st.session_state['selected_gallery_image'] = img_file
-                            st.rerun()
+                    for idx, img_file in enumerate(page_image_files):
+                        g_col = gallery_cols[idx % GALLERY_COLUMNS]
+                        with g_col:
+                            img_path = os.path.join(full_browse_path, img_file)
+                            display_thumbnail_safely(
+                                img_path,
+                                max_dimension=GALLERY_THUMBNAIL_SIZE,
+                                width="stretch",
+                            )
+
+                            # Use a primary button if it is currently selected, else secondary
+                            is_selected = st.session_state['selected_gallery_image'] == img_file
+                            btn_type = "primary" if is_selected else "secondary"
+                            btn_label = "Selected" if is_selected else "Select"
+
+                            st.button(
+                                btn_label,
+                                key=f"select_{target_browse_folder}_{img_file}",
+                                type=btn_type,
+                                use_container_width=True,
+                                on_click=select_gallery_image,
+                                args=(img_file,),
+                            )
 
             with col_meta:
                 st.write("**Selected Image & YAML Metadata**")
@@ -637,8 +857,12 @@ with tab5:
                 selected_image = st.session_state['selected_gallery_image']
                 image_path = os.path.join(full_browse_path, selected_image)
 
-                # Show the actively selected image at the top of the metadata column
-                st.image(image_path, use_container_width=True)
+                # Show a larger cached preview of the actively selected image.
+                display_thumbnail_safely(
+                    image_path,
+                    max_dimension=1280,
+                    width="stretch",
+                )
 
                 # Replace image extension with .yaml
                 yaml_filename = os.path.splitext(selected_image)[0] + ".yaml"
@@ -685,3 +909,28 @@ SAM2 Mask Count    : {sam2.get('mask_count', 0)}
                 else:
                     st.error(f"Metadata file not found: `{yaml_filename}`")
                     st.info("Ensure the extraction pipeline successfully generated the .yaml files alongside the images.")
+
+
+TAB_RENDERERS = [
+    render_welcome_tab,
+    render_upload_tab,
+    render_extraction_tab,
+    render_sky_tab,
+    render_blurry_tab,
+    render_metadata_tab,
+]
+
+tab_containers = (tab0, tab1, tab2, tab3, tab4, tab5)
+
+if SUPPORTS_LAZY_TABS:
+    for tab, render_tab in zip(tab_containers, TAB_RENDERERS):
+        if tab.open:
+            with tab:
+                render_tab()
+            break
+else:
+    active_tab_index = TAB_LABELS.index(
+        fallback_active_tab or TAB_LABELS[0]
+    )
+    with tab_containers[active_tab_index]:
+        TAB_RENDERERS[active_tab_index]()

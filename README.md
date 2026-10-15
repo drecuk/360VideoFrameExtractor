@@ -40,6 +40,29 @@ The frame extractor is used for work presented in the following accepted paper:
 
 Use the following Insta360 Studio export settings before processing footage with this application or a structure-from-motion workflow.
 
+### Insta360 X6 Recommended Export Settings for Photogrammetry
+
+Use this model-specific preset when exporting Insta360 X6 footage:
+
+| Setting | Recommendation |
+| --- | --- |
+| Resolution | **8K (7680 × 3840)** |
+| Frame Rate | **30 fps** (match the original recording) |
+| Bitrate | **200 Mbps** to minimise re-encoding artefacts |
+| Codec | **H.265 (HEVC)** |
+| Colour Space | **Rec.709, 10-bit** when the source was recorded in 10-bit |
+| Bottom Stitching Optimisation | **ON**, provided it introduces no geometric distortion |
+| APMP | **OFF** |
+| Export Format | **MP4, 360° equirectangular** |
+| FFmpeg Frame Extraction | **PNG at 3–5 fps** |
+| Stabilisation | Test **OFF** first for geometric consistency |
+
+> **Priority:** Maximum resolution, consistent geometry, and minimal compression artefacts.
+
+In the application's **Extraction** tab, select **Frames per second** and choose **3–5 fps** to apply the recommended PNG sampling rate. The **Seconds between frames** mode remains available for sparse sampling workflows.
+
+### General Insta360 Guidance
+
 ### Media Type
 
 **Select:** `Video`

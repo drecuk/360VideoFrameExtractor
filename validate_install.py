@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import importlib
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -46,9 +45,6 @@ PROJECT_FILES = (
     "logo/logo.png",
 )
 
-SYSTEM_TOOLS = ("ffmpeg", "ffprobe", "colmap")
-
-
 def check_python_modules() -> list[str]:
     missing = []
     for module_name, display_name in PYTHON_MODULES.items():
@@ -74,28 +70,30 @@ def check_project_files() -> list[str]:
 
 
 def check_system_tools() -> list[str]:
-    missing = []
-    for tool in SYSTEM_TOOLS:
-        tool_path = shutil.which(tool)
-        if tool_path:
-            print(f"[OK] {tool}: {tool_path}")
-        else:
-            print(f"[MISSING] {tool}")
-            missing.append(tool)
+    from utils_ffmpeg import find_v360_ffmpeg, resolve_ffprobe_executable
 
-    ffmpeg_path = shutil.which("ffmpeg")
+    missing = []
+
+    ffmpeg_path, ffmpeg_error = find_v360_ffmpeg()
     if ffmpeg_path:
-        result = subprocess.run(
-            [ffmpeg_path, "-hide_banner", "-filters"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if "v360" in result.stdout:
-            print("[OK] FFmpeg v360 filter")
+        print(f"[OK] ffmpeg with v360: {ffmpeg_path}")
+        ffprobe_path = resolve_ffprobe_executable(ffmpeg_path)
+        if ffprobe_path:
+            print(f"[OK] ffprobe: {ffprobe_path}")
         else:
-            print("[MISSING] FFmpeg v360 filter")
-            missing.append("ffmpeg-v360")
+            print("[MISSING] ffprobe matching the selected FFmpeg")
+            missing.append("ffprobe")
+    else:
+        print(f"[MISSING] ffmpeg-v360: {ffmpeg_error}")
+        missing.append("ffmpeg-v360")
+
+    colmap_path = shutil.which("colmap")
+    if colmap_path:
+        print(f"[OK] colmap: {colmap_path}")
+    else:
+        print("[MISSING] colmap")
+        missing.append("colmap")
+
     return missing
 
 
