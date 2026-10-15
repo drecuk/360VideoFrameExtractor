@@ -40,28 +40,28 @@ The frame extractor is used for work presented in the following accepted paper:
 
 Use the following Insta360 Studio export settings before processing footage with this application or a structure-from-motion workflow.
 
-### Insta360 X6 Recommended Export Settings for Photogrammetry
+### Insta360 X5 and X6 Recommended Export Settings for Photogrammetry
 
-Use this model-specific preset when exporting Insta360 X6 footage:
+Use this side-by-side comparison when exporting Insta360 X5 or X6 footage:
 
-| Setting | Recommendation |
-| --- | --- |
-| Resolution | **8K (7680 × 3840)** |
-| Frame Rate | **30 fps** (match the original recording) |
-| Bitrate | **200 Mbps** to minimise re-encoding artefacts |
-| Codec | **H.265 (HEVC)** |
-| Colour Space | **Rec.709, 10-bit** when the source was recorded in 10-bit |
-| Bottom Stitching Optimisation | **ON**, provided it introduces no geometric distortion |
-| APMP | **OFF** |
-| Export Format | **MP4, 360° equirectangular** |
-| FFmpeg Frame Extraction | **PNG at 3–5 fps** |
-| Stabilisation | Test **OFF** first for geometric consistency |
+| Setting | Insta360 X5 | Insta360 X6 |
+| --- | --- | --- |
+| Resolution | Original maximum, preferably **8K** | **8K (7680 × 3840)** |
+| Frame Rate | Match the original recording | **30 fps**, matching the original recording |
+| Bitrate | Maximum available; **100 Mbps or higher** for H.264/H.265 | **200 Mbps** to minimise re-encoding artefacts |
+| Codec | **ProRes 422/422 LT** preferred; otherwise high-bitrate H.264/H.265 | **H.265 (HEVC)** |
+| Colour Space | **Standard SDR** | **Rec.709, 10-bit** when the source was recorded in 10-bit |
+| Bottom Stitching Optimisation | Test if available; reject settings that introduce geometric distortion | **ON**, provided it introduces no geometric distortion |
+| APMP | **OFF** | **OFF** |
+| Export Format | **360° equirectangular video** | **MP4, 360° equirectangular** |
+| FFmpeg Frame Extraction | **PNG** using a configurable sampling interval | **PNG at 3–5 fps** |
+| Stabilisation | **OFF:** FlowState Stabilisation and Horizon Lock | Test **OFF** first for geometric consistency |
 
 > **Priority:** Maximum resolution, consistent geometry, and minimal compression artefacts.
 
-In the application's **Extraction** tab, select **Frames per second** and choose **3–5 fps** to apply the recommended PNG sampling rate. The **Seconds between frames** mode remains available for sparse sampling workflows.
+For X6 footage, select **Frames per second** in the application's **Extraction** tab and choose **3–5 fps**. For X5 footage or sparse sampling workflows, select **Seconds between frames**.
 
-### General Insta360 Guidance
+### Shared Export Guidance
 
 ### Media Type
 
@@ -79,32 +79,32 @@ This produces the standard 2:1 panoramic projection expected by the extraction p
 
 ### Resolution
 
-**Select:** `Custom`, then retain the original maximum resolution, such as 8K.
+Follow the model-specific recommendation in the table above. Select `Custom`, then retain the original maximum resolution; use `8K (7680 × 3840)` for the recommended X6 workflow.
 
 Higher source resolution preserves more visual detail for feature matching, camera alignment, NeRF training, and Gaussian Splatting reconstruction.
 
 ### Encoding and Format
 
-**Preferred codec:** `ProRes 422` or `ProRes 422 LT`
+For X5 footage, prefer `ProRes 422` or `ProRes 422 LT` when available. For the recommended X6 workflow, use `H.265 (HEVC)` at `200 Mbps`.
 
-ProRes provides high-quality intermediate footage with minimal visible compression. A separate bitrate setting is generally unnecessary when exporting to ProRes.
+ProRes provides high-quality intermediate footage with minimal visible compression. A separate bitrate setting is generally unnecessary when exporting X5 footage to ProRes.
 
-When ProRes is unavailable and MP4 with H.264 or H.265 must be used, select the maximum available bitrate, such as `100 Mbps` or higher.
+When ProRes is unavailable for X5 footage and MP4 with H.264 or H.265 must be used, select the maximum available bitrate, such as `100 Mbps` or higher.
 
 ### Colour
 
-**Select:** `Standard`
+For X5 footage, select `Standard SDR`. For X6 footage recorded in 10-bit, select `Rec.709, 10-bit`.
 
 Avoid `Vivid`, `Color Plus`, or other enhanced colour modes. These modes can alter lighting, contrast, and shadow information required for consistent matching across camera views.
 
 ### Stabilisation
 
-**Turn off:**
+For X5 footage, turn off:
 
 - FlowState Stabilisation
 - Horizon Lock
 
-Structure-from-motion and reconstruction pipelines need consistent camera motion and image geometry. Artificial horizon correction or frame-by-frame stabilisation can introduce warping, jitter, and geometric inconsistencies that make camera alignment less reliable.
+For X6 footage, test with stabilisation off first. Structure-from-motion and reconstruction pipelines need consistent camera motion and image geometry. Artificial horizon correction or frame-by-frame stabilisation can introduce warping, jitter, and geometric inconsistencies that make camera alignment less reliable.
 
 ### Dolby Vision
 
@@ -125,14 +125,13 @@ APMP packages footage for immersive playback on devices such as Apple Vision Pro
 - [x] **Export Type:** 360 Video
 - [x] **Media Type:** Video
 - [x] **Stitch Type:** Equirectangular (Standard 360)
-- [x] **Resolution:** Original maximum resolution, preferably 8K
-- [x] **macOS codec:** ProRes 422 or ProRes 422 LT
-- [x] **Windows codec:** High-bitrate H.264 or H.265
-- [x] **Colour:** Standard SDR
+- [x] **Resolution:** Follow the X5/X6 values in the comparison table
+- [x] **Frame rate:** Match the original recording
+- [x] **Codec and bitrate:** Use the model-specific recommendation
+- [x] **Colour:** Standard SDR for X5; Rec.709 10-bit for 10-bit X6 footage
 - [x] **Disabled:** Dolby Vision
 - [x] **Disabled:** APMP
-- [x] **Disabled:** FlowState Stabilisation
-- [x] **Disabled:** Horizon Lock
+- [x] **Geometry check:** Reject stitching or stabilisation settings that introduce distortion
 
 > **Pipeline note:** Nerfstudio, NSVF, Luma AI, Postshot, and similar pipelines may include their own frame-extraction and lens-calibration tools. Check the selected pipeline before performing a separate manual FFmpeg extraction.
 
