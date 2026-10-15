@@ -70,3 +70,5 @@ chmod +x install.sh run.sh
 
 printf '\nInstallation complete.\n'
 printf 'To open the web app, double-click run_macos.command\n'
+printf 'From Terminal, use: ./run.sh\n'
+printf 'Do not use "streamlit run app.py" directly; it may select a different Python environment.\n'

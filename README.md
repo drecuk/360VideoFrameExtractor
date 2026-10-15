@@ -217,6 +217,15 @@ If Windows still cannot find Python, FFmpeg, or COLMAP after installation, close
 
 If Python installation fails through `winget`, install Python 3.12 manually from [python.org](https://www.python.org/downloads/windows/) and tick `Add python.exe to PATH`, then run `install_windows.bat` again.
 
+If thumbnails do not appear in **Remove Sky Photos**, **Remove Blurry Images**, or **Browse Metadata**, close the app and run:
+
+```powershell
+.\install.ps1
+.\run.ps1
+```
+
+The launcher verifies that Streamlit, OpenCV, and Pillow are installed in the project `.venv`. Use `run_windows.bat` or `.\run.ps1` rather than a global `streamlit run app.py` command. The project pins Streamlit 1.56.0 because its Tornado media server avoids the Windows `/media/` HTTP 500 errors observed with the newer Starlette server. Thumbnail rendering also uses Windows-safe sizing, and any unreadable image displays its filename and the underlying Windows error.
+
 If the app does not open automatically, open a browser and go to [http://localhost:8501](http://localhost:8501).
 
 ## macOS Beginner Installation
@@ -279,6 +288,14 @@ http://localhost:8501
 
 Keep the Terminal window open while using the app. Closing it stops the web app.
 
+Always start the application with `run_macos.command`, `./run.sh`, or the explicit project-environment command:
+
+```bash
+.venv/bin/python -m streamlit run app.py
+```
+
+Do not run `streamlit run app.py` directly from an unrelated Terminal environment. That command can select a global Python installation where project packages such as OpenCV (`cv2`) are not installed.
+
 ### Optional Terminal Method
 
 If double-clicking does not work, open **Terminal** from:
@@ -309,6 +326,19 @@ brew install ffmpeg
 ```
 
 If COLMAP cannot be installed automatically, the web app can still run, but the dependency checker will report COLMAP as missing.
+
+If the app reports `ModuleNotFoundError: No module named 'cv2'`, repair and launch the project environment with:
+
+```bash
+./install.sh
+./run.sh
+```
+
+You can verify OpenCV directly with:
+
+```bash
+.venv/bin/python -c 'import cv2; print(cv2.__version__)'
+```
 
 If the app does not open automatically, open a browser and go to [http://localhost:8501](http://localhost:8501).
 
@@ -461,14 +491,13 @@ Download COLMAP from the [official COLMAP releases page](https://github.com/colm
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python validate_install.py
-python -m streamlit run app.py
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python validate_install.py
+.venv/bin/python -m streamlit run app.py
 ```
 
-On Windows, activate the environment with `.venv\Scripts\Activate.ps1`.
+On Windows, use `.venv\Scripts\python.exe` in place of `.venv/bin/python`.
 
 ## Validation
 
@@ -478,7 +507,7 @@ Run the installation checker without starting Streamlit:
 .venv/bin/python validate_install.py
 ```
 
-The validator checks Python modules, required project assets, camera visualisation generation, YAML sidecar metadata generation and reading, FFmpeg, FFprobe, COLMAP, and the FFmpeg `v360` filter.
+The validator checks Python modules, required project assets, camera visualisation generation, YAML sidecar metadata generation and reading, cross-platform thumbnail generation, FFmpeg, FFprobe, COLMAP, and the FFmpeg `v360` filter.
 
 ## Project Structure
 
@@ -490,6 +519,7 @@ The validator checks Python modules, required project assets, camera visualisati
 |-- util_read_yaml.py         YAML sidecar metadata reader
 |-- utils_checksys.py         External dependency checks
 |-- utils_ffmpeg.py           FFmpeg extraction and YAML metadata pipeline
+|-- utils_images.py           Cross-platform thumbnail generation
 |-- utils_os.py               Native folder opening
 |-- utils_viz.py              Interactive 3D camera layout
 |-- logo/logo.png             Application logo
@@ -535,7 +565,7 @@ ffmpeg -hide_banner -filters | grep v360
 
 ### The application cannot find uploaded videos
 
-Run Streamlit from the repository root with `./run.sh`, `.\run.ps1`, or `python -m streamlit run app.py`.
+Run Streamlit from the repository root with `./run.sh`, `.\run.ps1`, or `.venv/bin/python -m streamlit run app.py`.
 
 ## License
 

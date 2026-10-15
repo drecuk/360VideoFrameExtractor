@@ -16,7 +16,6 @@
 #   ##########################################################
 
 import streamlit as st
-import io
 import inspect
 import os
 from utils_viz import generate_360_splits
@@ -26,7 +25,7 @@ from util_detectsky import evaluate_sky_image, move_confirmed_skies
 from utils_checksys import check_dependencies, get_os_instructions
 from util_detectblurry import evaluate_blurry_image, move_confirmed_blurry
 from util_read_yaml import read_frame_metadata
-from PIL import Image # display image thumbnails
+from utils_images import create_thumbnail_bytes
 
 
 st.set_page_config(page_title="360 Frame Extractor", layout="wide")
@@ -47,22 +46,7 @@ def create_image_thumbnail(
     """Create a cached JPEG thumbnail, invalidated when the source file changes."""
     # File metadata is intentionally part of the cache key.
     _ = file_mtime_ns, file_size
-
-    try:
-        with Image.open(image_path) as image:
-            image.load()
-            image.thumbnail(
-                (max_dimension, max_dimension),
-                Image.Resampling.LANCZOS,
-            )
-            if image.mode != "RGB":
-                image = image.convert("RGB")
-
-            output = io.BytesIO()
-            image.save(output, format="JPEG", quality=85, optimize=True)
-            return output.getvalue(), None
-    except (OSError, SyntaxError, ValueError) as error:
-        return None, str(error)
+    return create_thumbnail_bytes(image_path, max_dimension)
 
 
 def display_thumbnail_safely(
@@ -71,25 +55,37 @@ def display_thumbnail_safely(
     **image_options,
 ):
     """Display a cached thumbnail without allowing a damaged file to stop a run."""
+    image_path = os.path.abspath(os.path.normpath(os.fspath(image_path)))
+
     try:
         file_stat = os.stat(image_path)
-    except OSError:
-        st.warning(f"Image is missing: `{os.path.basename(image_path)}`")
-        return False
-
-    thumbnail, _error = create_image_thumbnail(
-        image_path,
-        file_stat.st_mtime_ns,
-        file_stat.st_size,
-        max_dimension,
-    )
-    if thumbnail is None:
+    except OSError as error:
         st.warning(
-            f"Skipped incomplete or unreadable image: `{os.path.basename(image_path)}`"
+            f"Image is unavailable: `{os.path.basename(image_path)}` ({error})"
         )
         return False
 
-    st.image(thumbnail, **image_options)
+    try:
+        thumbnail = create_image_thumbnail(
+            image_path,
+            file_stat.st_mtime_ns,
+            file_stat.st_size,
+            max_dimension,
+        )
+    except (OSError, SyntaxError, ValueError) as error:
+        st.warning(
+            f"Could not create thumbnail for `{os.path.basename(image_path)}`: "
+            f"{error}"
+        )
+        return False
+
+    # On Windows, use Streamlit's long-supported default image sizing. Some
+    # installations accept width="stretch" but fail to paint the image in the
+    # browser. The source thumbnail dimensions still keep the grids compact.
+    if os.name == "nt" and image_options.get("width") == "stretch":
+        image_options.pop("width")
+
+    st.image(thumbnail, output_format="JPEG", **image_options)
     return True
 
 

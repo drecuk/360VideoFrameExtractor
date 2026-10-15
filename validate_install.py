@@ -36,6 +36,7 @@ PROJECT_FILES = (
     "app.py",
     "utils_viz.py",
     "utils_ffmpeg.py",
+    "utils_images.py",
     "utils_os.py",
     "utils_checksys.py",
     "util_detectsky.py",
@@ -144,6 +145,31 @@ def check_yaml_metadata() -> list[str]:
         return ["yaml-sidecar-metadata"]
 
 
+def check_thumbnail_generation() -> list[str]:
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+        from utils_images import create_thumbnail_bytes
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_path = Path(tmp_dir) / "Windows thumbnail test ü.png"
+            Image.new("RGBA", (320, 180), (30, 120, 210, 180)).save(source_path)
+
+            thumbnail_bytes = create_thumbnail_bytes(source_path, max_dimension=96)
+            with Image.open(BytesIO(thumbnail_bytes)) as thumbnail:
+                if thumbnail.format != "JPEG":
+                    raise RuntimeError("thumbnail is not JPEG encoded")
+                if max(thumbnail.size) > 96:
+                    raise RuntimeError("thumbnail dimensions exceed the requested size")
+
+        print("[OK] Cross-platform thumbnail generation")
+        return []
+    except Exception as exc:
+        print(f"[FAILED] Thumbnail generation: {exc}")
+        return ["thumbnail-generation"]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate the Extract360Frames installation.")
     parser.add_argument(
@@ -154,6 +180,7 @@ def main() -> int:
     args = parser.parse_args()
 
     print(f"Python: {sys.version.split()[0]}")
+    print(f"Interpreter: {sys.executable}")
     print("\nPython modules")
     python_missing = check_python_modules()
 
@@ -163,6 +190,7 @@ def main() -> int:
     print("\nApplication smoke test")
     smoke_missing = check_visualisation()
     smoke_missing.extend(check_yaml_metadata())
+    smoke_missing.extend(check_thumbnail_generation())
 
     print("\nExternal tools")
     system_missing = check_system_tools()

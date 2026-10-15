@@ -396,12 +396,22 @@ if (-not (Test-Path $VenvPython)) {
 
 Write-Host "Installing Streamlit, PyYAML and Python requirements..."
 & $VenvPython -m pip install --upgrade pip setuptools wheel
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not update the project environment's packaging tools."
+}
+
 & $VenvPython -m pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not install the Python packages listed in requirements.txt."
+}
 
 New-Item -ItemType Directory -Force -Path "uploaded_videos" | Out-Null
 
 Write-Host "`nChecking external applications..."
 & $VenvPython validate_install.py --allow-missing-system
+if ($LASTEXITCODE -ne 0) {
+    throw "Installation validation failed. Review the messages above, then run install_windows.bat again."
+}
 
 Write-Host "`nInstallation complete."
 Write-Host "Start the application with: .\run_windows.bat"
