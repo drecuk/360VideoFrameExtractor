@@ -122,6 +122,62 @@ def resolve_ffprobe_executable(ffmpeg_path=None):
     return None
 
 
+def probe_video_file(video_path, ffprobe_path, timeout=30):
+    """Confirm FFprobe can read a real video stream from a candidate file."""
+    if not ffprobe_path:
+        return False, "FFprobe is not available."
+
+    command = [
+        ffprobe_path,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=codec_name,codec_type,width,height:stream_disposition=attached_pic",
+        "-of",
+        "json",
+        os.fspath(video_path),
+    ]
+
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "FFprobe timed out while reading the file."
+    except OSError as error:
+        return False, f"FFprobe could not be started: {error}"
+
+    if result.returncode != 0:
+        error_text = (result.stderr or "").strip().splitlines()
+        reason = error_text[-1] if error_text else "FFprobe could not read the file."
+        return False, reason[:300]
+
+    try:
+        probe_data = json.loads(result.stdout or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return False, "FFprobe returned invalid metadata."
+
+    for stream in probe_data.get("streams", []):
+        disposition = stream.get("disposition", {})
+        if (
+            stream.get("codec_type") == "video"
+            and stream.get("codec_name")
+            and int(stream.get("width") or 0) > 0
+            and int(stream.get("height") or 0) > 0
+            and not disposition.get("attached_pic")
+        ):
+            return True, None
+
+    return False, "No decodable video stream was found."
+
+
 def get_video_creation_time(video_path, ffprobe_path="ffprobe"):
     """
     Queries video metadata via ffprobe to extract the exact recording start time.

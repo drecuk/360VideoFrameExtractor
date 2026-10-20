@@ -24,7 +24,10 @@ The frame extractor is used for work presented in the following accepted paper:
 
 ## Features
 
-- Upload MP4, MOV, AVI, and MKV videos.
+- Process MP4, MOV, AVI, and MKV videos directly from a chosen folder.
+- Select folders on internal storage or mounted external hard drives with the operating system's native folder picker, without uploading or copying the videos first.
+- Optionally upload videos through the browser into the active workspace.
+- Ignore hidden/system sidecars such as `._*.mp4` and admit only video files containing an FFprobe-readable video stream.
 - Preview horizontal, 45-degree, and zenith camera views in 3D.
 - Extract perspective PNG frames with the FFmpeg `v360` filter.
 - Generate YAML sidecar metadata files for extracted perspective frames.
@@ -522,6 +525,7 @@ The validator checks Python modules, required project assets, camera visualisati
 |-- utils_images.py           Cross-platform thumbnail generation
 |-- utils_os.py               Native folder opening
 |-- utils_viz.py              Interactive 3D camera layout
+|-- utils_workspace.py        Local and external-drive workspace handling
 |-- logo/logo.png             Application logo
 |-- .streamlit/config.toml    Streamlit upload configuration
 |-- requirements.txt          Python dependencies
@@ -540,7 +544,15 @@ The validator checks Python modules, required project assets, camera visualisati
 
 ## Runtime Data
 
-Uploaded videos and extracted frames are written under `uploaded_videos/`. The directory contents are excluded from Git so large videos and generated images are not accidentally committed to GitHub.
+The **Upload** tab starts with `uploaded_videos/` as its default workspace. Click **Choose Directory…** to use the native macOS, Windows, or Linux folder picker and select any existing readable and writable directory, including a folder on a mounted external hard drive. Manual path entry remains available as a fallback; examples are `/Volumes/ExternalDrive/Survey` on macOS and `D:\HeritageSurvey` on Windows.
+
+When **Use videos already in this directory** is selected, the app reads supported videos directly from that directory; it does not copy them through the browser. Extracted `cubemap-*` folders are created alongside the source videos, and the sky, blur, and metadata tabs use the same active workspace. The selected path lasts for the current app session and returns to the project folder when the app is restarted.
+
+Before a video appears in Upload or Extraction, the app excludes hidden and operating-system files—including macOS AppleDouble files such as `._VID_20261015_140314_00_131.mp4`—and asks FFprobe to confirm that the file contains a readable video stream. Files that merely have a video extension but cannot be read are listed under **Show ignored files** and are never included in individual or batch extraction. The image-processing tabs apply the same hidden/system-file filtering to extracted photographs.
+
+The default `uploaded_videos/` contents are excluded from Git so large videos and generated images are not accidentally committed to GitHub. Files in a separately selected workspace are outside the repository and are therefore not part of Git either.
+
+The native picker opens on the computer running Streamlit. If the app is opened remotely, use manual entry for a path that exists on the server rather than on the browser computer.
 
 The Streamlit configuration currently permits uploads up to 10 GB. Large extractions can require substantially more storage because each video produces multiple PNG views per sampled frame.
 

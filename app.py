@@ -18,14 +18,32 @@
 import streamlit as st
 import inspect
 import os
+import shutil
+import tempfile
+from pathlib import Path
 from utils_viz import generate_360_splits
-from utils_ffmpeg import extract_360_frames
+from utils_ffmpeg import (
+    extract_360_frames,
+    find_v360_ffmpeg,
+    probe_video_file,
+    resolve_ffprobe_executable,
+)
 from utils_os import open_folder
 from util_detectsky import evaluate_sky_image, move_confirmed_skies
 from utils_checksys import check_dependencies, get_os_instructions
 from util_detectblurry import evaluate_blurry_image, move_confirmed_blurry
 from util_read_yaml import read_frame_metadata
 from utils_images import create_thumbnail_bytes
+from utils_workspace import (
+    VIDEO_EXTENSIONS,
+    choose_workspace_directory,
+    list_extracted_folders,
+    list_ignored_video_sidecars,
+    list_image_files,
+    list_video_files,
+    normalise_workspace_path,
+    validate_workspace_directory,
+)
 
 
 st.set_page_config(page_title="360 Frame Extractor", layout="wide")
@@ -34,6 +52,133 @@ GALLERY_PAGE_SIZE = 64
 GALLERY_COLUMNS = 8
 GALLERY_THUMBNAIL_SIZE = 160
 GALLERY_SCROLL_HEIGHT = 720
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_WORKSPACE_DIR = PROJECT_ROOT / "uploaded_videos"
+
+
+def get_workspace_dir():
+    """Return the active workspace, initialising the project default if needed."""
+    DEFAULT_WORKSPACE_DIR.mkdir(exist_ok=True)
+    if "workspace_dir" not in st.session_state:
+        st.session_state["workspace_dir"] = str(DEFAULT_WORKSPACE_DIR)
+    return Path(st.session_state["workspace_dir"])
+
+
+def clear_workspace_dependent_state():
+    """Discard selections and scan results that belong to another workspace."""
+    state_keys = (
+        "last_output_dir",
+        "detected_skies",
+        "scan_complete",
+        "detected_blurry",
+        "blur_scan_complete",
+        "selected_gallery_image",
+        "blur_folder",
+        "browse_folder_tab5",
+    )
+    for key in state_keys:
+        st.session_state.pop(key, None)
+
+    for key in list(st.session_state):
+        if key.startswith("gallery_page_"):
+            st.session_state.pop(key, None)
+
+
+def reset_workspace():
+    """Reset the workspace selector before Streamlit recreates its widgets."""
+    DEFAULT_WORKSPACE_DIR.mkdir(exist_ok=True)
+    clear_workspace_dependent_state()
+    st.session_state["workspace_dir"] = str(DEFAULT_WORKSPACE_DIR)
+    st.session_state["workspace_path_input"] = str(DEFAULT_WORKSPACE_DIR)
+
+
+def format_storage_size(byte_count):
+    """Format a storage size for the workspace status panel."""
+    size = float(byte_count)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+
+
+def workspace_is_available(workspace_dir):
+    """Show a consistent recovery message when a workspace cannot be used."""
+    workspace_problems = validate_workspace_directory(workspace_dir)
+    if not workspace_problems:
+        return True
+
+    st.error(
+        "The active workspace is unavailable. Reconnect the drive or choose "
+        "another directory in Tab 1."
+    )
+    return False
+
+
+@st.cache_resource(show_spinner=False)
+def get_workspace_ffprobe_path():
+    """Resolve FFprobe once for fast validation during repeated app reruns."""
+    ffmpeg_path, _ = find_v360_ffmpeg()
+    return resolve_ffprobe_executable(ffmpeg_path)
+
+
+@st.cache_data(show_spinner=False, max_entries=2048)
+def inspect_video_file(video_path, file_mtime_ns, file_size, ffprobe_path):
+    """Cache FFprobe validation until a candidate file changes."""
+    _ = file_mtime_ns, file_size
+    return probe_video_file(video_path, ffprobe_path)
+
+
+def get_workspace_video_files(workspace_dir):
+    """Return FFprobe-readable videos and rejected visible candidates."""
+    candidate_paths = list_video_files(workspace_dir)
+    ffprobe_path = get_workspace_ffprobe_path()
+    if not ffprobe_path:
+        return [], [
+            (path, "FFprobe is not available.") for path in candidate_paths
+        ]
+
+    video_paths = []
+    rejected_paths = []
+    for candidate_path in candidate_paths:
+        try:
+            file_stat = candidate_path.stat()
+        except OSError as error:
+            rejected_paths.append((candidate_path, str(error)))
+            continue
+
+        is_compatible, reason = inspect_video_file(
+            str(candidate_path),
+            file_stat.st_mtime_ns,
+            file_stat.st_size,
+            ffprobe_path,
+        )
+        if is_compatible:
+            video_paths.append(candidate_path)
+        else:
+            rejected_paths.append(
+                (candidate_path, reason or "FFprobe could not read this video.")
+            )
+
+    return video_paths, rejected_paths
+
+
+def show_ignored_video_files(workspace_dir, rejected_paths):
+    """Summarise system sidecars and invalid video-like files excluded from use."""
+    ignored_items = [
+        (path, "Hidden/system sidecar")
+        for path in list_ignored_video_sidecars(workspace_dir)
+    ]
+    ignored_items.extend(rejected_paths)
+    if not ignored_items:
+        return
+
+    st.info(
+        f"Ignored {len(ignored_items)} hidden, system, or FFmpeg-incompatible "
+        "file(s)."
+    )
+    with st.expander("Show ignored files"):
+        for ignored_path, reason in ignored_items:
+            st.write(f"`{ignored_path.name}` — {reason}")
 
 
 @st.cache_data(show_spinner=False, max_entries=1024)
@@ -293,7 +438,7 @@ def render_welcome_tab():
     # --- NORMAL WELCOME TEXT ---
     st.write("This web application allows you to extract precise perspective frames from 360-degree video footage.")
     st.write("### Instructions:")
-    st.write("1. Go to **Tab 1** and upload your 360 video.")
+    st.write("1. Go to **Tab 1** and choose a video workspace or upload your 360 video.")
     st.write("2. Go to **Tab 2** to adjust extraction settings. The 3D viewer will update in real-time.")
     st.write("3. Click **Extract Frames** to begin FFmpeg processing.")
     st.write("4. Go to **Tab 3** to automatically detect and filter out empty sky photos.")
@@ -357,40 +502,234 @@ def render_welcome_tab():
 #   ##########################################################
 #   TAB 1: UPLOAD 360 VIDEOS
 #   ----------------------------------------------------------
-#   Accepts one or more 360-degree video files and stores them
-#   within the local uploaded_videos folder for processing
+#   Uses videos from a chosen local or external-drive directory
+#   and optionally saves browser uploads into that workspace
 #   ##########################################################
 
 def render_upload_tab():
-    st.header("Upload Video")
-    st.write("Upload a folder with your 360 videos or drag and drop.")
+    st.header("Video Workspace")
+    st.write(
+        "Process videos directly from an existing directory, including a mounted "
+        "external hard drive, or upload videos into that directory."
+    )
+
+    workspace_dir = get_workspace_dir()
+    if "workspace_path_input" not in st.session_state:
+        st.session_state["workspace_path_input"] = str(workspace_dir)
+
+    picker_col, reset_col = st.columns([2, 1])
+    with picker_col:
+        choose_directory = st.button(
+            "📁 Choose Directory…",
+            type="primary",
+            width="stretch",
+            help="Open the folder picker on the computer running this app.",
+        )
+    with reset_col:
+        st.button(
+            "Reset to Project Folder",
+            width="stretch",
+            on_click=reset_workspace,
+        )
+
+    # The native picker must run before the text widget is created so the
+    # selected path can safely update that widget's session value.
+    if choose_directory:
+        selected_directory, picker_error = choose_workspace_directory()
+        if picker_error:
+            st.error(picker_error)
+            st.info("You can enter the directory path manually below.")
+        elif selected_directory is not None:
+            workspace_problems = validate_workspace_directory(selected_directory)
+            if workspace_problems:
+                for problem in workspace_problems:
+                    st.error(problem)
+            else:
+                if selected_directory != workspace_dir:
+                    clear_workspace_dependent_state()
+                st.session_state["workspace_dir"] = str(selected_directory)
+                st.session_state["workspace_path_input"] = str(selected_directory)
+                workspace_dir = selected_directory
+                st.success("Workspace directory selected.")
+
+    st.text_input(
+        "Or enter a workspace directory manually",
+        key="workspace_path_input",
+        help=(
+            "Paste an existing folder path, for example "
+            "/Volumes/ExternalDrive/Survey on macOS or "
+            r"D:\HeritageSurvey on Windows."
+        ),
+    )
+
+    use_directory = st.button("Use Typed Path")
+
+    if use_directory:
+        try:
+            selected_directory = normalise_workspace_path(
+                st.session_state["workspace_path_input"]
+            )
+        except (OSError, ValueError) as error:
+            st.error(str(error))
+        else:
+            workspace_problems = validate_workspace_directory(selected_directory)
+            if workspace_problems:
+                for problem in workspace_problems:
+                    st.error(problem)
+            else:
+                if selected_directory != workspace_dir:
+                    clear_workspace_dependent_state()
+                st.session_state["workspace_dir"] = str(selected_directory)
+                workspace_dir = selected_directory
+                st.success("Workspace directory selected.")
+
+    # Check the active path on every rerun so a disconnected external drive is
+    # reported before any extraction or filtering operation begins.
+    workspace_problems = validate_workspace_directory(workspace_dir)
+    if workspace_problems:
+        st.error(
+            f"The active workspace is unavailable: `{workspace_dir}` "
+            f"{' '.join(workspace_problems)}"
+        )
+        st.info("Reconnect the drive or select another existing directory above.")
+        return
+
+    video_paths, rejected_video_paths = get_workspace_video_files(workspace_dir)
+    free_space = shutil.disk_usage(workspace_dir).free
+    status_col1, status_col2 = st.columns(2)
+    with status_col1:
+        st.metric("Videos found", len(video_paths))
+    with status_col2:
+        st.metric("Free space", format_storage_size(free_space))
+
+    show_ignored_video_files(workspace_dir, rejected_video_paths)
+    st.caption(f"Active workspace: `{workspace_dir}`")
+    if st.button("📂 Open Workspace Folder"):
+        if not open_folder(str(workspace_dir)):
+            st.error("Could not open the workspace folder.")
+
+    source_mode = st.radio(
+        "Choose how to add videos",
+        (
+            "Use videos already in this directory",
+            "Upload videos into this directory",
+        ),
+        horizontal=True,
+    )
+
+    if source_mode == "Use videos already in this directory":
+        if video_paths:
+            st.success(f"{len(video_paths)} supported video(s) are ready for extraction.")
+            with st.expander("Show detected videos"):
+                for video_path in video_paths:
+                    st.write(video_path.name)
+        else:
+            st.info(
+                "No FFmpeg-readable MP4, MOV, AVI, or MKV videos were found "
+                "in this directory."
+            )
+        return
 
     # --------------------------- SELECT VIDEO FILES
-    # accept the supported MP4, MOV, AVI and MKV video formats
-    uploaded_files = st.file_uploader("Drop 360 videos here", type=['mp4', 'mov', 'avi', 'mkv'], accept_multiple_files=True)
+    # Browser uploads remain available for smaller files and existing workflows.
+    uploaded_files = st.file_uploader(
+        "Drop 360 videos here",
+        type=["mp4", "mov", "avi", "mkv"],
+        accept_multiple_files=True,
+    )
 
     if uploaded_files:
-        # create the local video folder if it does not already exist
-        os.makedirs("uploaded_videos", exist_ok=True)
-
-        # initialise the number of newly written video files
         new_uploads = 0
+        existing_uploads = 0
+        rejected_uploads = []
+        ffprobe_path = get_workspace_ffprobe_path()
+        known_valid_paths = {path.resolve() for path in video_paths}
+
+        if not ffprobe_path:
+            st.error(
+                "FFprobe is required to validate uploaded videos. Install FFmpeg "
+                "and FFprobe, then restart the app."
+            )
+            return
 
         # --------------------------- SAVE VIDEO FILES
-        # process every video selected through the upload interface
-        for f in uploaded_files:
-            file_path = os.path.join("uploaded_videos", f.name)
+        # Validate in a temporary file before accepting an upload into the workspace.
+        for uploaded_file in uploaded_files:
+            safe_filename = Path(uploaded_file.name).name
+            if safe_filename.startswith("."):
+                rejected_uploads.append(
+                    (safe_filename, "Hidden and system sidecar files are not allowed.")
+                )
+                continue
+            if Path(safe_filename).suffix.lower() not in VIDEO_EXTENSIONS:
+                rejected_uploads.append(
+                    (safe_filename, "The file does not use a supported video extension.")
+                )
+                continue
 
-            # only write new files or files with a different stored size
-            if not os.path.exists(file_path) or os.path.getsize(file_path) != f.size:
-                with open(file_path, "wb") as out_file:
-                    out_file.write(f.read())
+            file_path = workspace_dir / safe_filename
+            resolved_file_path = file_path.resolve()
+
+            if (
+                file_path.exists()
+                and file_path.stat().st_size == uploaded_file.size
+                and resolved_file_path in known_valid_paths
+            ):
+                existing_uploads += 1
+                continue
+
+            temporary_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    dir=workspace_dir,
+                    prefix=".360-upload-",
+                    suffix=file_path.suffix,
+                    delete=False,
+                ) as output_file:
+                    temporary_path = Path(output_file.name)
+                    output_file.write(uploaded_file.getbuffer())
+
+                is_compatible, reason = probe_video_file(
+                    temporary_path,
+                    ffprobe_path,
+                )
+                if not is_compatible:
+                    rejected_uploads.append(
+                        (
+                            safe_filename,
+                            reason or "FFprobe could not read this video.",
+                        )
+                    )
+                    continue
+
+                os.replace(temporary_path, file_path)
+                temporary_path = None
+                known_valid_paths.add(resolved_file_path)
                 new_uploads += 1
+            except OSError as error:
+                rejected_uploads.append((safe_filename, str(error)))
+            finally:
+                if temporary_path is not None:
+                    try:
+                        temporary_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
         if new_uploads > 0:
-            st.success(f"Successfully uploaded and saved {new_uploads} new video(s).")
-        else:
-            st.info(f"{len(uploaded_files)} video(s) ready for extraction in the local folder.")
+            st.success(
+                f"Successfully validated and saved {new_uploads} new video(s) "
+                "to the workspace."
+            )
+        if existing_uploads > 0:
+            st.info(f"{existing_uploads} validated video(s) were already present.")
+        if rejected_uploads:
+            st.warning(
+                f"Rejected {len(rejected_uploads)} upload(s) that FFmpeg cannot use."
+            )
+            with st.expander("Show rejected uploads"):
+                for filename, reason in rejected_uploads:
+                    st.write(f"`{filename}` — {reason}")
 
 #   ##########################################################
 #   TAB 2: VIDEO FRAME EXTRACTION
@@ -403,6 +742,11 @@ def render_upload_tab():
 
 def render_extraction_tab():
     st.header("Extraction Settings")
+    workspace_dir = get_workspace_dir()
+    st.caption(f"Workspace: `{workspace_dir}`")
+
+    if not workspace_is_available(workspace_dir):
+        return
 
     # create separate columns for settings and 3D visualisation
     col_settings, col_viz = st.columns([1, 2])
@@ -441,12 +785,10 @@ def render_extraction_tab():
         res = st.slider("IMAGE_RESOLUTION", 512, 8192, 1024, step=256)
 
         # --------------------------- FIND AVAILABLE VIDEOS
-        # load supported videos from the local uploaded_videos folder
-        available_videos = []
-        if os.path.exists("uploaded_videos"):
-            # include all supported extraction formats
-            valid_exts = ('.mp4', '.mov', '.avi', '.mkv')
-            available_videos = [f for f in os.listdir("uploaded_videos") if f.lower().endswith(valid_exts)]
+        # load supported videos from the active workspace
+        video_paths, rejected_video_paths = get_workspace_video_files(workspace_dir)
+        available_videos = [path.name for path in video_paths]
+        show_ignored_video_files(workspace_dir, rejected_video_paths)
 
         # allow the user to select one video for individual extraction
         selected_vid = st.selectbox("Target Video to Extract:", available_videos) if available_videos else None
@@ -469,11 +811,11 @@ def render_extraction_tab():
     # extract perspective frames from the selected video
     if extract_btn:
         if not selected_vid:
-            st.error("Please upload a video in Tab 1 first.")
+            st.error("Choose a workspace containing a supported video in Tab 1 first.")
         else:
-            vid_path = os.path.join("uploaded_videos", selected_vid)
+            vid_path = workspace_dir / selected_vid
             vid_clean_name = os.path.splitext(selected_vid)[0]
-            out_dir = os.path.join("uploaded_videos", f"cubemap-{vid_clean_name}")
+            out_dir = workspace_dir / f"cubemap-{vid_clean_name}"
 
             st.markdown("---")
             st.write(f"**Extracting:** {selected_vid}")
@@ -482,16 +824,16 @@ def render_extraction_tab():
             status_text = st.empty()
 
             # run FFmpeg extraction using the selected camera settings
-            extract_360_frames(vid_path, out_dir, vid_clean_name, interval_seconds, h_splits, inc_nadir, inc_45, fov, res, progress_bar, status_text)
+            extract_360_frames(str(vid_path), str(out_dir), vid_clean_name, interval_seconds, h_splits, inc_nadir, inc_45, fov, res, progress_bar, status_text)
 
             # remember the latest output folder for the folder viewer
-            st.session_state['last_output_dir'] = os.path.abspath(out_dir)
+            st.session_state['last_output_dir'] = str(out_dir.resolve())
 
     # --------------------------- BATCH EXTRACTION
-    # process every supported video found within uploaded_videos
+    # process every supported video found within the active workspace
     if batch_extract_btn:
         if not available_videos:
-            st.error("No videos available in the folder to process. Please upload them in Tab 1.")
+            st.error("No supported videos are available. Choose a workspace in Tab 1.")
         else:
             st.markdown("---")
             st.write(f"### 🚀 Batch Processing {len(available_videos)} Videos")
@@ -501,22 +843,22 @@ def render_extraction_tab():
             for idx, vid_filename in enumerate(available_videos):
                 st.write(f"**File {idx + 1} of {len(available_videos)}:** `{vid_filename}`")
 
-                vid_path = os.path.join("uploaded_videos", vid_filename)
+                vid_path = workspace_dir / vid_filename
                 vid_clean_name = os.path.splitext(vid_filename)[0]
-                out_dir = os.path.join("uploaded_videos", f"cubemap-{vid_clean_name}")
+                out_dir = workspace_dir / f"cubemap-{vid_clean_name}"
 
                 # create dedicated progress controls for the current video
                 file_progress_bar = st.progress(0.0)
                 file_status_text = st.empty()
 
                 # extract perspective frames from the current video
-                extract_360_frames(vid_path, out_dir, vid_clean_name, interval_seconds, h_splits, inc_nadir, inc_45, fov, res, file_progress_bar, file_status_text)
+                extract_360_frames(str(vid_path), str(out_dir), vid_clean_name, interval_seconds, h_splits, inc_nadir, inc_45, fov, res, file_progress_bar, file_status_text)
 
                 # update progress across the complete video batch
                 overall_progress.progress((idx + 1) / len(available_videos))
 
             st.success("🎉 Batch extraction complete for all videos!")
-            st.session_state['last_output_dir'] = os.path.abspath("uploaded_videos")
+            st.session_state['last_output_dir'] = str(workspace_dir.resolve())
 
     # --------------------------- OPEN OUTPUT FOLDER
     # display the folder command after an extraction has completed
@@ -538,13 +880,16 @@ def render_extraction_tab():
 def render_sky_tab():
     st.header("Remove Sky Photos")
     st.write("Detect and filter out frames that are predominantly sky/empty space.")
+    workspace_dir = get_workspace_dir()
+    st.caption(f"Workspace: `{workspace_dir}`")
+    if not workspace_is_available(workspace_dir):
+        return
 
     # --------------------------- FIND EXTRACTED FOLDERS
     # locate all cubemap folders created during video extraction
-    extracted_folders = []
-    if os.path.exists("uploaded_videos"):
-        extracted_folders = [f for f in os.listdir("uploaded_videos")
-                             if os.path.isdir(os.path.join("uploaded_videos", f)) and f.startswith("cubemap-")]
+    extracted_folders = [
+        path.name for path in list_extracted_folders(workspace_dir)
+    ]
 
     col_ctrl1, col_ctrl2 = st.columns([2, 1])
 
@@ -564,8 +909,7 @@ def render_sky_tab():
         if not target_folder:
             st.error("No extracted folders found. Please extract frames in Tab 2 first.")
         else:
-            full_target_path = os.path.join("uploaded_videos", target_folder)
-            valid_exts = ('.png', '.jpg', '.jpeg')
+            full_target_path = workspace_dir / target_folder
 
             # reset previously detected images before starting a new scan
             st.session_state['detected_skies'] = []
@@ -573,18 +917,16 @@ def render_sky_tab():
             # --------------------------- SCAN FOR SKY IMAGES
             # evaluate every supported image using the selected sky threshold
             with st.spinner("Analyzing frames for sky content..."):
-                for filename in os.listdir(full_target_path):
-                    if filename.lower().endswith(valid_exts):
-                        img_path = os.path.join(full_target_path, filename)
-                        is_sky, pct = evaluate_sky_image(img_path, threshold)
+                for img_path in list_image_files(full_target_path):
+                    is_sky, pct = evaluate_sky_image(str(img_path), threshold)
 
-                        if is_sky:
-                            # store the image path, sky percentage and filename for review
-                            st.session_state['detected_skies'].append({
-                                'path': img_path,
-                                'pct': pct,
-                                'filename': filename
-                            })
+                    if is_sky:
+                        # store the image path, sky percentage and filename for review
+                        st.session_state['detected_skies'].append({
+                            'path': str(img_path),
+                            'pct': pct,
+                            'filename': img_path.name
+                        })
 
             st.session_state['scan_complete'] = True
             st.rerun()
@@ -602,10 +944,10 @@ def render_sky_tab():
             # --------------------------- CONFIRM SKY REMOVAL
             # move every image remaining within the review list
             if st.button("✅ Confirm & Move Skies", type="primary"):
-                dest_folder = os.path.join("uploaded_videos", target_folder, "skies_only")
+                dest_folder = workspace_dir / target_folder / "skies_only"
                 paths_to_move = [item['path'] for item in st.session_state['detected_skies']]
 
-                moved = move_confirmed_skies(paths_to_move, dest_folder)
+                moved = move_confirmed_skies(paths_to_move, str(dest_folder))
                 st.success(f"Successfully moved {moved} images to {dest_folder}")
 
                 # clear the sky review state after moving confirmed images
@@ -644,13 +986,16 @@ def render_sky_tab():
 def render_blurry_tab():
     st.header("Remove Blurry Images")
     st.write("Detect and filter out frames that contain blurry sectors (e.g., motion blur).")
+    workspace_dir = get_workspace_dir()
+    st.caption(f"Workspace: `{workspace_dir}`")
+    if not workspace_is_available(workspace_dir):
+        return
 
     # --------------------------- FIND EXTRACTED FOLDERS
     # locate all cubemap folders created during video extraction
-    extracted_folders = []
-    if os.path.exists("uploaded_videos"):
-        extracted_folders = [f for f in os.listdir("uploaded_videos")
-                             if os.path.isdir(os.path.join("uploaded_videos", f)) and f.startswith("cubemap-")]
+    extracted_folders = [
+        path.name for path in list_extracted_folders(workspace_dir)
+    ]
 
     # Create 4 columns to accommodate the minimum sectors slider
     col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns([2, 1, 1, 1])
@@ -677,8 +1022,7 @@ def render_blurry_tab():
         if not target_folder_blur:
             st.error("No extracted folders found. Please extract frames in Tab 2 first.")
         else:
-            full_target_path = os.path.join("uploaded_videos", target_folder_blur)
-            valid_exts = ('.png', '.jpg', '.jpeg')
+            full_target_path = workspace_dir / target_folder_blur
 
             # reset previously detected images before starting a new scan
             st.session_state['detected_blurry'] = []
@@ -686,21 +1030,18 @@ def render_blurry_tab():
             # --------------------------- SCAN FOR BLURRY IMAGES
             # evaluate every image in the folder using the selected blur settings
             with st.spinner("Analyzing frames for partial blur..."):
-                for filename in os.listdir(full_target_path):
-                    if filename.lower().endswith(valid_exts):
-                        img_path = os.path.join(full_target_path, filename)
+                for img_path in list_image_files(full_target_path):
+                    #  min_sectors passed in
+                    is_blurry, bad_chunks, total_chunks = evaluate_blurry_image(str(img_path), grid_size, threshold, min_sectors)
 
-                        #  min_sectors passed in
-                        is_blurry, bad_chunks, total_chunks = evaluate_blurry_image(img_path, grid_size, threshold, min_sectors)
-
-                        if is_blurry:
-                            # store image details and failed sector counts for review
-                            st.session_state['detected_blurry'].append({
-                                'path': img_path,
-                                'bad_chunks': bad_chunks,
-                                'total_chunks': total_chunks,
-                                'filename': filename
-                            })
+                    if is_blurry:
+                        # store image details and failed sector counts for review
+                        st.session_state['detected_blurry'].append({
+                            'path': str(img_path),
+                            'bad_chunks': bad_chunks,
+                            'total_chunks': total_chunks,
+                            'filename': img_path.name
+                        })
 
             st.session_state['blur_scan_complete'] = True
             st.rerun()
@@ -718,10 +1059,10 @@ def render_blurry_tab():
             # --------------------------- CONFIRM BLUR REMOVAL
             # move every image remaining within the review list
             if st.button("✅ Confirm & Move Blurry", type="primary"):
-                dest_folder = os.path.join("uploaded_videos", target_folder_blur, "blurry_only")
+                dest_folder = workspace_dir / target_folder_blur / "blurry_only"
                 paths_to_move = [item['path'] for item in st.session_state['detected_blurry']]
 
-                moved = move_confirmed_blurry(paths_to_move, dest_folder)
+                moved = move_confirmed_blurry(paths_to_move, str(dest_folder))
                 st.success(f"Successfully moved {moved} images to {dest_folder}")
 
                 # clear the blur review state after moving confirmed images
@@ -758,12 +1099,15 @@ def render_blurry_tab():
 def render_metadata_tab():
     st.header("Browse Metadata")
     st.write("Select an extracted folder to browse the images and view their generated YAML metadata side-by-side.")
+    workspace_dir = get_workspace_dir()
+    st.caption(f"Workspace: `{workspace_dir}`")
+    if not workspace_is_available(workspace_dir):
+        return
 
     # 1. Find Extracted Folders
-    extracted_folders = []
-    if os.path.exists("uploaded_videos"):
-        extracted_folders = [f for f in os.listdir("uploaded_videos")
-                             if os.path.isdir(os.path.join("uploaded_videos", f)) and f.startswith("cubemap-")]
+    extracted_folders = [
+        path.name for path in list_extracted_folders(workspace_dir)
+    ]
 
     if not extracted_folders:
         st.info("No extracted folders found. Go to Tab 2 to extract a video first.")
@@ -771,12 +1115,10 @@ def render_metadata_tab():
         # 2. Select Folder
         target_browse_folder = st.selectbox("Select Extracted Folder to Browse:", extracted_folders, key="browse_folder_tab5")
 
-        # FIX: We must use target_browse_folder, not target_folder_blur!
-        full_browse_path = os.path.join("uploaded_videos", target_browse_folder)
+        full_browse_path = workspace_dir / target_browse_folder
 
         # 3. Get all images in the folder
-        valid_exts = ('.png', '.jpg', '.jpeg')
-        image_files = sorted([f for f in os.listdir(full_browse_path) if f.lower().endswith(valid_exts)])
+        image_files = [path.name for path in list_image_files(full_browse_path)]
 
         if not image_files:
             st.warning("No images found in the selected folder.")
@@ -826,7 +1168,7 @@ def render_metadata_tab():
                     for idx, img_file in enumerate(page_image_files):
                         g_col = gallery_cols[idx % GALLERY_COLUMNS]
                         with g_col:
-                            img_path = os.path.join(full_browse_path, img_file)
+                            img_path = full_browse_path / img_file
                             display_thumbnail_safely(
                                 img_path,
                                 max_dimension=GALLERY_THUMBNAIL_SIZE,
@@ -851,7 +1193,7 @@ def render_metadata_tab():
                 st.write("**Selected Image & YAML Metadata**")
 
                 selected_image = st.session_state['selected_gallery_image']
-                image_path = os.path.join(full_browse_path, selected_image)
+                image_path = full_browse_path / selected_image
 
                 # Show a larger cached preview of the actively selected image.
                 display_thumbnail_safely(
@@ -862,7 +1204,7 @@ def render_metadata_tab():
 
                 # Replace image extension with .yaml
                 yaml_filename = os.path.splitext(selected_image)[0] + ".yaml"
-                yaml_path = os.path.join(full_browse_path, yaml_filename)
+                yaml_path = full_browse_path / yaml_filename
 
                 # Check if YAML exists and read it
                 metadata = read_frame_metadata(yaml_path, print_summary=False)

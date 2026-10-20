@@ -38,6 +38,7 @@ PROJECT_FILES = (
     "utils_ffmpeg.py",
     "utils_images.py",
     "utils_os.py",
+    "utils_workspace.py",
     "utils_checksys.py",
     "util_detectsky.py",
     "util_detectblurry.py",
@@ -170,6 +171,62 @@ def check_thumbnail_generation() -> list[str]:
         return ["thumbnail-generation"]
 
 
+def check_workspace_selection() -> list[str]:
+    try:
+        from utils_workspace import (
+            _run_directory_picker,
+            list_extracted_folders,
+            list_ignored_video_sidecars,
+            list_image_files,
+            list_video_files,
+            normalise_workspace_path,
+            validate_workspace_directory,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            (workspace / "B.MP4").touch()
+            (workspace / "a.mov").touch()
+            (workspace / "ignore.txt").touch()
+            (workspace / "._hidden.mp4").touch()
+            (workspace / "frame.png").touch()
+            (workspace / "._frame.png").touch()
+            (workspace / "cubemap-a").mkdir()
+
+            quoted_workspace = normalise_workspace_path(f'"{workspace}"')
+            if quoted_workspace != workspace.resolve():
+                raise RuntimeError("quoted directory path was not normalised")
+            if validate_workspace_directory(quoted_workspace):
+                raise RuntimeError("temporary workspace was rejected")
+            if [path.name for path in list_video_files(workspace)] != [
+                "a.mov",
+                "B.MP4",
+            ]:
+                raise RuntimeError("supported video discovery failed")
+            if [path.name for path in list_extracted_folders(workspace)] != [
+                "cubemap-a"
+            ]:
+                raise RuntimeError("extracted folder discovery failed")
+            if [path.name for path in list_ignored_video_sidecars(workspace)] != [
+                "._hidden.mp4"
+            ]:
+                raise RuntimeError("hidden video sidecar filtering failed")
+            if [path.name for path in list_image_files(workspace)] != ["frame.png"]:
+                raise RuntimeError("hidden image sidecar filtering failed")
+
+            picker_path, picker_error = _run_directory_picker(
+                [sys.executable, "-c", f"print({str(workspace)!r})"]
+            )
+            if picker_error or picker_path != workspace.resolve():
+                raise RuntimeError("native picker result handling failed")
+
+        print("[OK] Local and external-drive workspace selection")
+        return []
+    except Exception as exc:
+        print(f"[FAILED] Workspace selection: {exc}")
+        return ["workspace-selection"]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate the Extract360Frames installation.")
     parser.add_argument(
@@ -191,6 +248,7 @@ def main() -> int:
     smoke_missing = check_visualisation()
     smoke_missing.extend(check_yaml_metadata())
     smoke_missing.extend(check_thumbnail_generation())
+    smoke_missing.extend(check_workspace_selection())
 
     print("\nExternal tools")
     system_missing = check_system_tools()
