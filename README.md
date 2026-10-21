@@ -66,6 +66,25 @@ Use this side-by-side comparison when exporting Insta360 X5 or X6 footage:
 
 For X6 footage, select **Frames per second** in the application's **Extraction** tab and choose **3–5 fps**. For X5 footage or sparse sampling workflows, select **Seconds between frames**.
 
+### Insta360 X3 and X4 Recommended Export Settings for Photogrammetry
+
+The extractor also supports X3 and X4 footage after the original `.insv` files have been stitched and exported from Insta360 Studio:
+
+| Setting | Insta360 X3 | Insta360 X4 |
+| --- | --- | --- |
+| Resolution | **5.7K (5760 × 2880)** | **8K (7680 × 3840)** |
+| Frame Rate | **30 fps**, matching the original recording | **30 fps**, matching the original recording |
+| Bitrate | Maximum available; preferably **100 Mbps or higher** | Maximum available for 8K export |
+| Codec | **H.265 (HEVC)** or high-bitrate H.264 | **H.265 (HEVC)** |
+| Colour Space | **Standard SDR / Rec.709** | **Standard SDR / Rec.709** |
+| Studio Project | **2:1 (360° Panorama)** | **2:1 (360° Panorama)** |
+| Source Format | Import the original **`.insv`** 360 files into Insta360 Studio | Import the original **`.insv`** 360 files into Insta360 Studio |
+| Export Format | **MP4, 360° equirectangular** | **MP4, 360° equirectangular** |
+| FFmpeg Frame Extraction | **PNG at 3–5 fps** | **PNG at 3–5 fps** |
+| Stabilisation | Test **OFF** first for geometric consistency | Test **OFF** first for geometric consistency |
+
+Raw `.insv` files cannot currently be selected directly in the application. Export a stitched 2:1 360° MP4 first; do not use a reframed flat export, Single-Lens recording, or Me Mode recording as the 360° source.
+
 ### Shared Export Guidance
 
 ### Media Type
@@ -84,13 +103,13 @@ This produces the standard 2:1 panoramic projection expected by the extraction p
 
 ### Resolution
 
-Follow the model-specific recommendation in the table above. Select `Custom`, then retain the original maximum resolution; use `8K (7680 × 3840)` for the recommended X6 workflow.
+Follow the model-specific recommendations in the tables above. Select `Custom`, then retain the original maximum resolution: use `5.7K (5760 × 2880)` for X3 and `8K (7680 × 3840)` for X4 and X6 when available.
 
 Higher source resolution preserves more visual detail for feature matching, camera alignment, NeRF training, and Gaussian Splatting reconstruction.
 
 ### Encoding and Format
 
-For X5 footage, prefer `ProRes 422` or `ProRes 422 LT` when available. For the recommended X6 workflow, use `H.265 (HEVC)` at `200 Mbps`.
+For X5 footage, prefer `ProRes 422` or `ProRes 422 LT` when available. For X3 and X4, use a high-bitrate H.265 export; for the recommended X6 workflow, use `H.265 (HEVC)` at `200 Mbps`.
 
 ProRes provides high-quality intermediate footage with minimal visible compression. A separate bitrate setting is generally unnecessary when exporting X5 footage to ProRes.
 
@@ -98,7 +117,7 @@ When ProRes is unavailable for X5 footage and MP4 with H.264 or H.265 must be us
 
 ### Colour
 
-For X5 footage, select `Standard SDR`. For X6 footage recorded in 10-bit, select `Rec.709, 10-bit`.
+For X3, X4, and X5 footage, select `Standard SDR` or `Rec.709`. For X6 footage recorded in 10-bit, select `Rec.709, 10-bit`.
 
 Avoid `Vivid`, `Color Plus`, or other enhanced colour modes. These modes can alter lighting, contrast, and shadow information required for consistent matching across camera views.
 
@@ -109,7 +128,7 @@ For X5 footage, turn off:
 - FlowState Stabilisation
 - Horizon Lock
 
-For X6 footage, test with stabilisation off first. Structure-from-motion and reconstruction pipelines need consistent camera motion and image geometry. Artificial horizon correction or frame-by-frame stabilisation can introduce warping, jitter, and geometric inconsistencies that make camera alignment less reliable.
+For X3, X4, and X6 footage, test with stabilisation off first. Structure-from-motion and reconstruction pipelines need consistent camera motion and image geometry. Artificial horizon correction or frame-by-frame stabilisation can introduce warping, jitter, and geometric inconsistencies that make camera alignment less reliable.
 
 ### Dolby Vision
 
@@ -130,10 +149,10 @@ APMP packages footage for immersive playback on devices such as Apple Vision Pro
 - [x] **Export Type:** 360 Video
 - [x] **Media Type:** Video
 - [x] **Stitch Type:** Equirectangular (Standard 360)
-- [x] **Resolution:** Follow the X5/X6 values in the comparison table
+- [x] **Resolution:** Follow the X3–X6 values in the comparison tables
 - [x] **Frame rate:** Match the original recording
 - [x] **Codec and bitrate:** Use the model-specific recommendation
-- [x] **Colour:** Standard SDR for X5; Rec.709 10-bit for 10-bit X6 footage
+- [x] **Colour:** Standard SDR/Rec.709 for X3–X5; Rec.709 10-bit for 10-bit X6 footage
 - [x] **Disabled:** Dolby Vision
 - [x] **Disabled:** APMP
 - [x] **Geometry check:** Reject stitching or stabilisation settings that introduce distortion
