@@ -23,8 +23,11 @@ import tempfile
 from pathlib import Path
 from utils_viz import generate_360_splits
 from utils_ffmpeg import (
+    calculate_horizontal_view_count,
+    create_extraction_preview_bytes,
     extract_360_frames,
     find_v360_ffmpeg,
+    normalise_yaw_degrees,
     probe_video_file,
     resolve_ffprobe_executable,
 )
@@ -52,8 +55,85 @@ GALLERY_PAGE_SIZE = 64
 GALLERY_COLUMNS = 8
 GALLERY_THUMBNAIL_SIZE = 160
 GALLERY_SCROLL_HEIGHT = 720
+EXTRACTION_PREVIEW_COLUMNS = 4
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_WORKSPACE_DIR = PROJECT_ROOT / "uploaded_videos"
+HORIZONTAL_COVERAGE_OPTIONS = {
+    "Full 360°": "full_360",
+    "Front subject window (camera front, yaw 0°)": "front_window",
+    "Back subject window (camera back, yaw 180°)": "back_window",
+}
+
+
+def get_extraction_run_paths(
+    workspace_dir,
+    video_stem,
+    horizontal_coverage,
+    front_yaw_degrees,
+    write_yaml_metadata=True,
+    horizontal_coverage_degrees=180,
+    view_fov_degrees=None,
+    num_horizontal_views=None,
+):
+    """Return an output directory and prefix that keep coverage runs separate."""
+    metadata_tag = "" if write_yaml_metadata else "-images-only"
+    if horizontal_coverage == "full_360":
+        return (
+            workspace_dir / f"cubemap-{video_stem}{metadata_tag}",
+            f"{video_stem}{metadata_tag}",
+        )
+
+    direction_tag = "front" if horizontal_coverage.startswith("front") else "back"
+    coverage_value = float(horizontal_coverage_degrees)
+    coverage_degrees_tag = f"{coverage_value:g}".replace(".", "p")
+    coverage_tag = f"{direction_tag}{coverage_degrees_tag}"
+    geometry_parts = []
+    if view_fov_degrees is not None:
+        fov_tag = f"{float(view_fov_degrees):g}".replace(".", "p")
+        geometry_parts.append(f"fov{fov_tag}")
+    if num_horizontal_views is not None:
+        geometry_parts.append(f"n{int(num_horizontal_views)}")
+    yaw = normalise_yaw_degrees(front_yaw_degrees)
+    yaw_tag = f"{yaw:g}".replace("-", "m").replace(".", "p")
+    geometry_tag = "-".join(geometry_parts)
+    geometry_tag = f"-{geometry_tag}" if geometry_tag else ""
+    run_tag = (
+        f"{coverage_tag}{geometry_tag}-frontyaw{yaw_tag}{metadata_tag}"
+    )
+    return (
+        workspace_dir / f"cubemap-{video_stem}-{run_tag}",
+        f"{video_stem}-{run_tag}",
+    )
+
+
+@st.cache_data(show_spinner=False)
+def get_cached_extraction_preview(
+    video_path,
+    video_mtime_ns,
+    video_size_bytes,
+    horizontal_coverage,
+    front_yaw_degrees,
+    fov,
+    num_horizontal_views,
+    include_up_down,
+    include_45_pitch,
+    horizontal_coverage_degrees,
+):
+    """Cache previews until the source video or selected geometry changes."""
+    # These values are part of Streamlit's cache key even though FFmpeg only
+    # needs the path; they invalidate cached images when the source is replaced.
+    _ = video_mtime_ns, video_size_bytes
+    return create_extraction_preview_bytes(
+        video_path,
+        horizontal_coverage=horizontal_coverage,
+        front_yaw_degrees=front_yaw_degrees,
+        fov=fov,
+        timestamp_seconds=3.0,
+        num_horizontal_views=num_horizontal_views,
+        include_up_down=include_up_down,
+        include_45_pitch=include_45_pitch,
+        horizontal_coverage_degrees=horizontal_coverage_degrees,
+    )
 
 
 def get_workspace_dir():
@@ -443,7 +523,7 @@ def render_welcome_tab():
     st.write("3. Click **Extract Frames** to begin FFmpeg processing.")
     st.write("4. Go to **Tab 3** to automatically detect and filter out empty sky photos.")
     st.write("5. Go to **Tab 4** to automatically detect and filter out blurry images.")
-    st.write("6. Go to **Tab 5** to browse extracted images and their generated sidecar YAML metadata.")
+    st.write("6. Go to **Tab 5** to browse extracted images and any optional sidecar YAML metadata.")
 
     # --- INSTA360 EXPORT SETTINGS ---
     st.divider()
@@ -778,10 +858,149 @@ def render_extraction_tab():
                 value=2,
             )
 
-        h_splits = st.slider("HORIZONTAL_SPLITS", 4, 64, 8)
-        inc_nadir = st.checkbox("INCLUDE_NADIR_ZENITH", value=True)
-        inc_45 = st.checkbox("INCLUDE_45_PITCH", value=True)
-        fov = st.number_input("FIELD_OF_VIEW", value=90)
+        coverage_label = st.selectbox(
+            "HORIZONTAL_COVERAGE",
+            list(HORIZONTAL_COVERAGE_OPTIONS),
+            help=(
+                "Full 360° extracts views all around the stitched video. Front and "
+                "back subject windows restrict extraction to an adjustable angle "
+                "centred on the selected heading."
+            ),
+        )
+        horizontal_coverage = HORIZONTAL_COVERAGE_OPTIONS[coverage_label]
+        front_yaw_degrees = 0
+        if horizontal_coverage != "full_360":
+            front_yaw_degrees = st.slider(
+                "FRONT_REFERENCE_YAW_DEGREES",
+                min_value=-180,
+                max_value=180,
+                value=0,
+                step=5,
+                key="front_reference_yaw_v4",
+                help=(
+                    "Yaw 0° is the confirmed physical camera front. Back is always "
+                    "180° opposite. Adjust this only if a particular stitched export "
+                    "has been reoriented."
+                ),
+            )
+            st.info(
+                "A stitched MP4 does not retain a dependable physical X3–X6 lens label. "
+                "Here, front means the selected reference heading in the exported "
+                "equirectangular image; back means the opposite heading."
+            )
+
+        if horizontal_coverage == "full_360":
+            horizontal_coverage_degrees = 360
+            h_splits = st.slider(
+                "HORIZONTAL_VIEW_COUNT",
+                4,
+                64,
+                8,
+                key="full_horizontal_view_count_v1",
+                help="Number of horizontal perspective views around the full panorama.",
+            )
+            inc_nadir = st.checkbox(
+                "INCLUDE_NADIR_ZENITH",
+                value=True,
+                key="full_include_nadir_zenith_v1",
+            )
+            inc_45 = st.checkbox(
+                "INCLUDE_45_PITCH",
+                value=True,
+                key="full_include_45_pitch_v1",
+            )
+            fov = st.number_input(
+                "FIELD_OF_VIEW",
+                min_value=1,
+                max_value=179,
+                value=90,
+                step=1,
+                key="full_field_of_view_v1",
+            )
+        else:
+            fov = st.number_input(
+                "FIELD_OF_VIEW",
+                min_value=20,
+                max_value=120,
+                value=60,
+                step=1,
+                key="subject_field_of_view_v1",
+                help=(
+                    "Angular width of each rectilinear PNG. A 60° view is a useful "
+                    "starting point for a subject-focused photogrammetry sequence."
+                ),
+            )
+            coverage_key = "subject_coverage_degrees_v1"
+            stored_coverage = int(st.session_state.get(coverage_key, 90))
+            st.session_state[coverage_key] = min(
+                180, max(int(fov), stored_coverage)
+            )
+            horizontal_coverage_degrees = st.slider(
+                "SUBJECT_COVERAGE_DEGREES",
+                min_value=int(fov),
+                max_value=180,
+                step=1,
+                key=coverage_key,
+                help=(
+                    "Total front or back angle to retain. The outer edges of the "
+                    "horizontal PNGs remain inside this subject window."
+                ),
+            )
+            target_overlap_percent = st.slider(
+                "TARGET_HORIZONTAL_OVERLAP_PERCENT",
+                min_value=50,
+                max_value=85,
+                value=65,
+                step=5,
+                key="subject_overlap_percent_v1",
+                help=(
+                    "Minimum target overlap between neighbouring horizontal views. "
+                    "The app calculates the required view count automatically."
+                ),
+            )
+            h_splits = calculate_horizontal_view_count(
+                horizontal_coverage_degrees,
+                fov,
+                target_overlap_percent,
+                maximum_views=64,
+            )
+            if h_splits > 1:
+                centre_step = (
+                    horizontal_coverage_degrees - fov
+                ) / (h_splits - 1)
+                actual_overlap_percent = 100 * (1 - centre_step / fov)
+                overlap_caption = (
+                    f" · actual adjacent overlap: **{actual_overlap_percent:.1f}%**"
+                )
+            else:
+                overlap_caption = " · one view fills the selected window"
+            st.caption(
+                f"Calculated horizontal views: **{h_splits}**{overlap_caption}"
+            )
+            inc_nadir = st.checkbox(
+                "INCLUDE_NADIR_ZENITH",
+                value=False,
+                key="subject_include_nadir_zenith_v1",
+                help=(
+                    "Disabled by default for a subject window because a straight-up "
+                    "view is usually outside an object-centred scan."
+                ),
+            )
+            inc_45 = st.checkbox(
+                "INCLUDE_45_PITCH",
+                value=False,
+                key="subject_include_45_pitch_v1",
+                help=(
+                    "Disabled by default for a subject window. Enable only when the "
+                    "object also needs upper and lower angled coverage."
+                ),
+            )
+            st.info(
+                f"This {horizontal_coverage_degrees}° window uses {h_splits} × "
+                f"{fov}° horizontal views. Narrow the window to exclude more of the "
+                "surroundings; use the automatic sample frames to verify the result."
+            )
+
         res = st.slider("IMAGE_RESOLUTION", 512, 8192, 1024, step=256)
 
         # --------------------------- FIND AVAILABLE VIDEOS
@@ -794,6 +1013,34 @@ def render_extraction_tab():
         selected_vid = st.selectbox("Target Video to Extract:", available_videos) if available_videos else None
 
         # --------------------------- EXTRACTION COMMANDS
+        write_yaml_metadata = st.checkbox(
+            "CREATE_YAML_SIDECAR_FILES",
+            value=True,
+            help=(
+                "Create one .yaml metadata file beside every extracted PNG. Disable "
+                "this for image-only output."
+            ),
+        )
+        with st.expander("What are YAML sidecar files for?"):
+            st.markdown(
+                """
+                Each YAML file accompanies one PNG and records its camera-view yaw and
+                pitch, field of view, resolution, projection, selected coverage angle,
+                front-reference heading, and video/frame timestamps. It also
+                provides structured fields for later vision-model, transient-object,
+                and SAM2 mask annotations.
+
+                YAML files make an extraction reproducible and allow scripts or 3D/AI
+                pipelines to associate every image with its capture geometry and time.
+                They are not required if you only need the PNG images.
+                """
+            )
+        if not write_yaml_metadata:
+            st.caption(
+                "PNG-only output will be saved in a separate `images-only` folder so "
+                "it cannot be confused with an earlier run containing YAML metadata."
+            )
+
         # display individual and batch extraction buttons side by side
         btn_col1, btn_col2 = st.columns(2)
         with btn_col1:
@@ -804,8 +1051,73 @@ def render_extraction_tab():
     with col_viz:
         # --------------------------- CAMERA RIG VISUALISATION
         # update the interactive 3D camera layout when settings change
-        fig = generate_360_splits(interval_seconds, h_splits, inc_nadir, inc_45, fov, res)
+        fig = generate_360_splits(
+            interval_seconds,
+            h_splits,
+            inc_nadir,
+            inc_45,
+            fov,
+            res,
+            horizontal_coverage,
+            front_yaw_degrees,
+            horizontal_coverage_degrees,
+        )
         st.plotly_chart(fig, width="stretch")
+
+        if selected_vid:
+            selected_video_path = workspace_dir / selected_vid
+            try:
+                selected_video_stat = selected_video_path.stat()
+            except OSError as exc:
+                st.error(f"Could not read the selected video for preview: {exc}")
+                selected_video_stat = None
+
+            if selected_video_stat:
+                with st.spinner("Generating sample frames at about 3 seconds..."):
+                    previews, preview_error = get_cached_extraction_preview(
+                        str(selected_video_path),
+                        selected_video_stat.st_mtime_ns,
+                        selected_video_stat.st_size,
+                        horizontal_coverage,
+                        front_yaw_degrees,
+                        fov,
+                        h_splits,
+                        inc_nadir,
+                        inc_45,
+                        horizontal_coverage_degrees,
+                    )
+            else:
+                previews, preview_error = None, None
+
+            if preview_error:
+                st.error(preview_error)
+            elif previews:
+                st.subheader(f"{coverage_label} sample frames")
+                preview_frames = previews["frames"]
+                for row_start in range(
+                    0, len(preview_frames), EXTRACTION_PREVIEW_COLUMNS
+                ):
+                    preview_columns = st.columns(EXTRACTION_PREVIEW_COLUMNS)
+                    row_frames = preview_frames[
+                        row_start : row_start + EXTRACTION_PREVIEW_COLUMNS
+                    ]
+                    for column, frame in zip(preview_columns, row_frames):
+                        with column:
+                            st.image(
+                                frame["bytes"],
+                                caption=(
+                                    f"{frame['view_id']} — "
+                                    f"yaw {frame['yaw_degrees']:g}°, "
+                                    f"pitch {frame['pitch_degrees']:g}°"
+                                ),
+                                width="stretch",
+                            )
+                st.caption(
+                    f"All {len(preview_frames)} configured {fov}° perspective views at "
+                    f"{previews['timestamp_seconds']:.1f} seconds. The preview includes "
+                    "every horizontal yaw plus enabled ±45° and zenith views, and "
+                    "refreshes automatically when extraction geometry changes."
+                )
 
     # --------------------------- SINGLE EXTRACTION
     # extract perspective frames from the selected video
@@ -815,7 +1127,16 @@ def render_extraction_tab():
         else:
             vid_path = workspace_dir / selected_vid
             vid_clean_name = os.path.splitext(selected_vid)[0]
-            out_dir = workspace_dir / f"cubemap-{vid_clean_name}"
+            out_dir, extraction_prefix = get_extraction_run_paths(
+                workspace_dir,
+                vid_clean_name,
+                horizontal_coverage,
+                front_yaw_degrees,
+                write_yaml_metadata=write_yaml_metadata,
+                horizontal_coverage_degrees=horizontal_coverage_degrees,
+                view_fov_degrees=fov,
+                num_horizontal_views=h_splits,
+            )
 
             st.markdown("---")
             st.write(f"**Extracting:** {selected_vid}")
@@ -824,7 +1145,23 @@ def render_extraction_tab():
             status_text = st.empty()
 
             # run FFmpeg extraction using the selected camera settings
-            extract_360_frames(str(vid_path), str(out_dir), vid_clean_name, interval_seconds, h_splits, inc_nadir, inc_45, fov, res, progress_bar, status_text)
+            extract_360_frames(
+                str(vid_path),
+                str(out_dir),
+                extraction_prefix,
+                interval_seconds,
+                h_splits,
+                inc_nadir,
+                inc_45,
+                fov,
+                res,
+                progress_bar,
+                status_text,
+                horizontal_coverage,
+                front_yaw_degrees,
+                write_yaml_metadata,
+                horizontal_coverage_degrees,
+            )
 
             # remember the latest output folder for the folder viewer
             st.session_state['last_output_dir'] = str(out_dir.resolve())
@@ -845,14 +1182,39 @@ def render_extraction_tab():
 
                 vid_path = workspace_dir / vid_filename
                 vid_clean_name = os.path.splitext(vid_filename)[0]
-                out_dir = workspace_dir / f"cubemap-{vid_clean_name}"
+                out_dir, extraction_prefix = get_extraction_run_paths(
+                    workspace_dir,
+                    vid_clean_name,
+                    horizontal_coverage,
+                    front_yaw_degrees,
+                    write_yaml_metadata=write_yaml_metadata,
+                    horizontal_coverage_degrees=horizontal_coverage_degrees,
+                    view_fov_degrees=fov,
+                    num_horizontal_views=h_splits,
+                )
 
                 # create dedicated progress controls for the current video
                 file_progress_bar = st.progress(0.0)
                 file_status_text = st.empty()
 
                 # extract perspective frames from the current video
-                extract_360_frames(str(vid_path), str(out_dir), vid_clean_name, interval_seconds, h_splits, inc_nadir, inc_45, fov, res, file_progress_bar, file_status_text)
+                extract_360_frames(
+                    str(vid_path),
+                    str(out_dir),
+                    extraction_prefix,
+                    interval_seconds,
+                    h_splits,
+                    inc_nadir,
+                    inc_45,
+                    fov,
+                    res,
+                    file_progress_bar,
+                    file_status_text,
+                    horizontal_coverage,
+                    front_yaw_degrees,
+                    write_yaml_metadata,
+                    horizontal_coverage_degrees,
+                )
 
                 # update progress across the complete video batch
                 overall_progress.progress((idx + 1) / len(available_videos))
@@ -1227,6 +1589,8 @@ def render_metadata_tab():
 Camera View ID     : {camera.get('view_id', 'N/A')} (Index: {camera.get('view_index', 'N/A')})
 Orientation        : Yaw {camera.get('yaw_degrees')}°, Pitch {camera.get('pitch_degrees')}°
 FOV & Resolution   : FOV {camera.get('fov_degrees')}° | {res_str} ({camera.get('projection', 'N/A')})
+Coverage           : {camera.get('horizontal_coverage', 'N/A')} ({camera.get('horizontal_coverage_degrees', 'N/A')}°)
+Front Reference    : Yaw {camera.get('front_reference_yaw_degrees', 'N/A')}°
 --------------------------------------------------
 Video Start Time   : {timestamps.get('video_start_time')}
 Frame Current Time : {timestamps.get('frame_current_time')}

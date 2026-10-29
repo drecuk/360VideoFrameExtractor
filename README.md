@@ -31,8 +31,10 @@ The frame extractor is used for work presented in the following accepted paper:
 - Optionally upload videos through the browser into the active workspace.
 - Ignore hidden/system sidecars such as `._*.mp4` and admit only video files containing an FFprobe-readable video stream.
 - Preview horizontal, 45-degree, and zenith camera views in 3D.
+- Limit extraction to full 360° or an adjustable, user-calibrated front/back subject window.
+- Automatically render the complete configured perspective-view set a few seconds into the selected video whenever the extraction geometry changes.
 - Extract perspective PNG frames with the FFmpeg `v360` filter.
-- Generate YAML sidecar metadata files for extracted perspective frames.
+- Optionally generate a YAML sidecar metadata file for every extracted perspective frame.
 - Browse extracted images beside their associated YAML metadata.
 - Process one video or all uploaded videos as a batch.
 - Detect blue-sky images using OpenCV HSV masks.
@@ -84,6 +86,63 @@ The extractor also supports X3 and X4 footage after the original `.insv` files h
 | Stabilisation | Test **OFF** first for geometric consistency | Test **OFF** first for geometric consistency |
 
 Raw `.insv` files cannot currently be selected directly in the application. Export a stitched 2:1 360° MP4 first; do not use a reframed flat export, Single-Lens recording, or Me Mode recording as the 360° source.
+
+### Exporting One-Directional 180° Frames for Objects and Monuments
+
+Use the front-facing 180° workflow when scanning an individual object, sculpture, building facade, or monument rather than reconstructing the entire surrounding environment. It keeps the useful camera-facing half of the recording while excluding most scenery behind the operator, reducing irrelevant images and downstream processing time.
+
+During recording, point the camera's physical front lens—the lens facing away from the screen—towards the subject, with the screen facing the operator. Avoid twisting the camera around the selfie-stick axis as you move around the subject.
+
+In Insta360 Studio, open the original `.insv` recording and configure the source in the main editing page before opening the Export window:
+
+1. Set **FlowState Stabilisation** to **ON**.
+2. Set **Direction Lock** to **ON** so the stitched panorama continues to follow the camera's physical facing direction.
+3. Do not add keyframes, reframing, subject tracking, or automatic camera movements.
+4. Export as **360 Video**, not as a flat reframed video.
+5. Use the maximum source resolution, match the source frame rate, select a high bitrate, and use H.265/HEVC where available.
+6. Use Rec.709 10-bit only when the original recording is 10-bit. Keep APMP off, and enable Bottom Stitching Optimisation only when it does not distort the subject.
+
+FlowState and Direction Lock are source-processing controls in Studio's main editing page; they do not appear in the final Export settings window. The exported file must remain a complete 2:1 equirectangular 360° MP4 because the extractor needs that projection to generate perspective images.
+
+In the application's **Extraction** tab:
+
+1. Select **Front subject window (camera front, yaw 0°)** under **HORIZONTAL_COVERAGE**.
+2. Set **SUBJECT_COVERAGE_DEGREES** to **180°**.
+3. Review the automatically generated sample frames to confirm that the subject remains within the selected window near the beginning, middle, and end of the video.
+4. If the subject occupies a smaller part of the panorama, reduce the window to **90°** or **120°** to avoid extracting unnecessary surroundings.
+5. Adjust **FRONT_REFERENCE_YAW_DEGREES** only when the preview shows that the stitched front is offset from the physical front lens.
+
+This mode assumes that the camera front remains aimed towards the object or monument throughout capture. For surveys intended to reconstruct the complete site, room, landscape, or surrounding environment, use **Full 360°** extraction instead.
+
+### Adjustable Front and Back Subject Windows
+
+The **Extraction** tab provides three horizontal coverage options:
+
+- **Full 360°** distributes the selected number of perspective views around the complete panorama.
+- **Front subject window (camera front, yaw 0°)** centres an adjustable angular window on the camera-front heading.
+- **Back subject window (camera back, yaw 180°)** uses the same adjustable window on the heading exactly opposite the camera front.
+
+Testing with the supported Insta360 X-series export workflow confirms that yaw `0°` is the physical camera front and yaw `180°` is the camera back, so those are the defaults shown in **HORIZONTAL_COVERAGE**. If a particular stitched export has been manually reoriented, adjust **FRONT_REFERENCE_YAW_DEGREES** until the automatically generated sample frames show the required side.
+
+[Insta360's X-series file-format documentation](https://onlinemanual.insta360.com/x4/en-us/operating-tutorials/storage/fileformat) describes pre-stitch filename direction `0` as the lens away from the screen and `1` as the screen-side or selfie lens. That raw-file convention is useful during media management, but it should not be treated as a guaranteed orientation label after Insta360 Studio has stitched, stabilised, or reframed the footage.
+
+For subject-focused scans, the defaults are a **90° total subject window**, **60° field of view**, and **65% target horizontal overlap**. The app automatically calculates the horizontal view count; these defaults produce three views centred at yaw `-15°`, `0°`, and `+15°` for the front window, with an actual adjacent overlap of 75%. The first and last centres are inset by half the field of view, so the outer horizontal image edges stop at `-45°` and `+45°` instead of extending beyond the selected window. Narrow **SUBJECT_COVERAGE_DEGREES** further when the object fills less of the panorama. The ±45° and zenith views default to off in subject mode, but can be enabled when the object also needs upper or lower coverage.
+
+When a supported video is selected, the application automatically renders the complete configured view set at about three seconds into the video. The preview includes every horizontal view plus every enabled upward 45°, downward 45°, and zenith view, matching all images that one extraction timestamp will produce. The samples refresh when the video, subject-window angle, front-reference yaw, calculated view count, overlap, pitch options, or field of view changes and are cached so unrelated interface changes do not repeatedly run FFmpeg.
+
+Full 360° mode retains its manual horizontal-view-count and 90° field-of-view controls. Front and back subject runs are written to separate `cubemap-*` folders whose names include the selected window, field of view, calculated horizontal-view count, and front-reference yaw. Each YAML sidecar records the coverage mode, exact coverage angle, and front-reference yaw.
+
+### Optional YAML Sidecar Files
+
+The **CREATE_YAML_SIDECAR_FILES** checkbox appears immediately above **Extract Selected** and **Batch Extract All**. It is enabled by default. When enabled, every PNG receives a same-named `.yaml` file containing:
+
+- Camera-view identifier, index, yaw, and pitch.
+- Field of view, image resolution, and projection type.
+- Full 360° or front/back subject-window mode, exact coverage angle, and front-reference yaw.
+- Source-video start time, frame time, and elapsed time.
+- Structured placeholders for vision-model details, transient-object keywords, and SAM2 mask annotations.
+
+These machine-readable files preserve the relationship between each image, its viewing direction, and its time in the video. They support reproducible extraction, custom scripts, AI processing, and downstream 3D workflows. They are not needed when only the PNG photographs are required. When YAML output is disabled, the application writes the results to a separate `images-only` folder so they cannot be confused with an earlier extraction containing metadata.
 
 ### Shared Export Guidance
 

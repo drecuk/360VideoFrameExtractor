@@ -14,6 +14,14 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 FFMPEG_PATH_FILE = PROJECT_ROOT / ".ffmpeg_path"
+HORIZONTAL_COVERAGE_MODES = {
+    "full_360",
+    "front_window",
+    "back_window",
+    "front_180",
+    "back_180",
+}
+PREVIEW_VIEW_BATCH_SIZE = 24
 FFMPEG_PROGRESS_KEYS = {
     "bitrate",
     "drop_frames",
@@ -28,6 +36,135 @@ FFMPEG_PROGRESS_KEYS = {
     "stream_0_0_q",
     "total_size",
 }
+
+
+def normalise_yaw_degrees(yaw):
+    """Return a yaw angle in the FFmpeg-friendly -180..180 range."""
+    numeric_yaw = float(yaw)
+    normalised = ((numeric_yaw + 180.0) % 360.0) - 180.0
+    if math.isclose(normalised, -180.0) and numeric_yaw > 0:
+        return 180.0
+    return normalised
+
+
+def _angle_identifier(angle):
+    """Create a filename-safe, human-readable identifier for an angle."""
+    rounded = round(float(angle), 3)
+    if math.isclose(rounded, 0.0):
+        rounded = 0.0
+    return f"{rounded:g}".replace("-", "m").replace(".", "p")
+
+
+def calculate_horizontal_view_count(
+    coverage_degrees,
+    view_fov_degrees,
+    overlap_percent=65,
+    maximum_views=64,
+):
+    """Calculate contained view count for a target angular overlap."""
+    coverage_degrees = float(coverage_degrees)
+    view_fov_degrees = float(view_fov_degrees)
+    overlap_fraction = float(overlap_percent) / 100.0
+
+    if not 0 < coverage_degrees <= 360:
+        raise ValueError("coverage_degrees must be between 0 and 360")
+    if not 0 < view_fov_degrees < 180:
+        raise ValueError("view_fov_degrees must be between 0 and 180")
+    if view_fov_degrees > coverage_degrees:
+        raise ValueError("view FOV cannot be wider than the selected coverage")
+    if not 0 <= overlap_fraction < 1:
+        raise ValueError("overlap_percent must be at least 0 and below 100")
+
+    if math.isclose(view_fov_degrees, coverage_degrees):
+        return 1
+
+    maximum_step = view_fov_degrees * (1.0 - overlap_fraction)
+    if maximum_step <= 0:
+        return int(maximum_views)
+
+    centre_span = coverage_degrees - view_fov_degrees
+    required_views = math.ceil(centre_span / maximum_step) + 1
+    return max(1, min(int(maximum_views), required_views))
+
+
+def build_camera_views(
+    num_horizontal_views,
+    include_up_down,
+    include_45_pitch,
+    horizontal_coverage="full_360",
+    front_yaw_degrees=0,
+    horizontal_coverage_degrees=180,
+    view_fov_degrees=0,
+):
+    """Build perspective-view directions for full or subject-window extraction.
+
+    ``front_yaw_degrees`` is a user-defined reference within the already stitched
+    equirectangular video. FFmpeg cannot infer which physical Insta360 lens that
+    direction came from after stitching. Back coverage is always 180 degrees
+    opposite this reference. Legacy ``front_180`` and ``back_180`` mode names are
+    accepted for older saved workflows.
+    """
+    if horizontal_coverage not in HORIZONTAL_COVERAGE_MODES:
+        raise ValueError(
+            "horizontal_coverage must be full_360, front_window, or back_window"
+        )
+    if int(num_horizontal_views) < 1:
+        raise ValueError("num_horizontal_views must be at least 1")
+
+    num_horizontal_views = int(num_horizontal_views)
+    front_yaw_degrees = normalise_yaw_degrees(front_yaw_degrees)
+
+    if horizontal_coverage == "full_360":
+        angle_step = 360.0 / num_horizontal_views
+        horizontal_yaws = []
+        for index in range(num_horizontal_views):
+            yaw = index * angle_step
+            if yaw > 180:
+                yaw -= 360
+            horizontal_yaws.append(yaw)
+    else:
+        horizontal_coverage_degrees = float(horizontal_coverage_degrees)
+        view_fov_degrees = float(view_fov_degrees)
+        if not 0 < horizontal_coverage_degrees <= 180:
+            raise ValueError(
+                "subject-window coverage must be greater than 0 and at most 180 degrees"
+            )
+        minimum_fov = 0 if horizontal_coverage in {"front_180", "back_180"} else 1
+        if not minimum_fov <= view_fov_degrees <= horizontal_coverage_degrees:
+            raise ValueError(
+                "view FOV must fit inside the selected subject-window coverage"
+            )
+
+        coverage_centre = front_yaw_degrees
+        if horizontal_coverage in {"back_window", "back_180"}:
+            coverage_centre += 180.0
+
+        # Keep the outer image rays within the requested subject window. The
+        # first and last centres are inset by half an image FOV.
+        centre_span = horizontal_coverage_degrees - view_fov_degrees
+        if num_horizontal_views == 1 or math.isclose(centre_span, 0.0):
+            horizontal_yaws = [normalise_yaw_degrees(coverage_centre)]
+        else:
+            angle_step = centre_span / (num_horizontal_views - 1)
+            first_yaw = coverage_centre - (centre_span / 2.0)
+            horizontal_yaws = [
+                normalise_yaw_degrees(first_yaw + index * angle_step)
+                for index in range(num_horizontal_views)
+            ]
+
+    views = []
+    for yaw in horizontal_yaws:
+        safe_yaw = _angle_identifier(yaw)
+        views.append({"id": f"Horiz_{safe_yaw}", "yaw": yaw, "pitch": 0})
+
+        if include_45_pitch:
+            views.append({"id": f"Up45_{safe_yaw}", "yaw": yaw, "pitch": 45})
+            views.append({"id": f"Down45_{safe_yaw}", "yaw": yaw, "pitch": -45})
+
+    if include_up_down:
+        views.append({"id": "Zenith_90", "yaw": front_yaw_degrees, "pitch": 90})
+
+    return views
 
 
 def _normalise_executable(candidate):
@@ -257,6 +394,15 @@ def generate_frame_metadata_yaml(
             "fov_degrees": fov,
             "resolution_px": [resolution, resolution],
             "projection": "rectilinear_pinhole",
+            "horizontal_coverage": view_info.get(
+                "horizontal_coverage", "full_360"
+            ),
+            "horizontal_coverage_degrees": view_info.get(
+                "horizontal_coverage_degrees", 360
+            ),
+            "front_reference_yaw_degrees": view_info.get(
+                "front_reference_yaw_degrees", 0
+            ),
         },
         "timestamps": {
             "video_start_time": start_time_str,
@@ -290,6 +436,138 @@ def get_video_duration(video_path, ffprobe_path="ffprobe"):
         return float(result.stdout.strip())
     except (subprocess.CalledProcessError, ValueError, FileNotFoundError):
         return None
+
+
+def create_extraction_preview_bytes(
+    video_path,
+    horizontal_coverage="full_360",
+    front_yaw_degrees=0,
+    fov=90,
+    timestamp_seconds=3.0,
+    resolution=320,
+    num_horizontal_views=4,
+    include_up_down=False,
+    include_45_pitch=False,
+    horizontal_coverage_degrees=180,
+):
+    """Render every configured perspective view at one preview timestamp."""
+    if horizontal_coverage == "full_360":
+        horizontal_coverage_degrees = 360
+
+    ffmpeg_path, ffmpeg_error = find_v360_ffmpeg()
+    if not ffmpeg_path:
+        return None, ffmpeg_error
+
+    ffprobe_path = resolve_ffprobe_executable(ffmpeg_path)
+    duration = get_video_duration(video_path, ffprobe_path) if ffprobe_path else None
+    if duration:
+        timestamp_seconds = min(max(float(timestamp_seconds), 0.0), duration / 2.0)
+    else:
+        timestamp_seconds = max(float(timestamp_seconds), 0.0)
+
+    try:
+        views = build_camera_views(
+            num_horizontal_views,
+            include_up_down=include_up_down,
+            include_45_pitch=include_45_pitch,
+            horizontal_coverage=horizontal_coverage,
+            front_yaw_degrees=front_yaw_degrees,
+            horizontal_coverage_degrees=horizontal_coverage_degrees,
+            view_fov_degrees=fov,
+        )
+    except ValueError as exc:
+        return None, f"Invalid preview coverage settings: {exc}"
+
+    with tempfile.TemporaryDirectory(prefix="extract360-heading-preview-") as tmp_dir:
+        output_paths = [
+            Path(tmp_dir) / f"preview_{index:03d}.png"
+            for index in range(len(views))
+        ]
+
+        # Multiple smaller FFmpeg runs avoid Windows command-line limits and
+        # excessive filter graphs when all 193 possible views are enabled.
+        for batch_start in range(0, len(views), PREVIEW_VIEW_BATCH_SIZE):
+            batch_views = views[
+                batch_start : batch_start + PREVIEW_VIEW_BATCH_SIZE
+            ]
+            batch_outputs = output_paths[
+                batch_start : batch_start + PREVIEW_VIEW_BATCH_SIZE
+            ]
+            split_labels = "".join(
+                f"[s{index}]" for index in range(len(batch_views))
+            )
+            filter_parts = [f"[0:v]split={len(batch_views)}{split_labels}"]
+            for index, view in enumerate(batch_views):
+                filter_parts.append(
+                    f"[s{index}]v360=input=equirect:output=flat:"
+                    f"h_fov={float(fov):g}:v_fov={float(fov):g}:"
+                    f"yaw={view['yaw']:g}:pitch={view['pitch']:g}:"
+                    f"w={int(resolution)}:h={int(resolution)}[v{index}]"
+                )
+
+            command = [
+                ffmpeg_path,
+                "-y",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{timestamp_seconds:.3f}",
+                "-i",
+                os.fspath(video_path),
+                "-filter_complex",
+                ";".join(filter_parts),
+            ]
+            for index, output_path in enumerate(batch_outputs):
+                command.extend(
+                    [
+                        "-map",
+                        f"[v{index}]",
+                        "-frames:v",
+                        "1",
+                        os.fspath(output_path),
+                    ]
+                )
+
+            try:
+                result = subprocess.run(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=90,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return None, f"Could not create the extraction preview: {exc}"
+
+            missing_outputs = [
+                path for path in batch_outputs if not path.is_file()
+            ]
+            if result.returncode != 0 or missing_outputs:
+                error_text = result.stderr.decode("utf-8", errors="replace").strip()
+                return None, (
+                    "FFmpeg could not create the extraction preview. "
+                    f"{error_text[-600:]}"
+                ).strip()
+
+        preview_frames = [
+            {
+                "bytes": output_path.read_bytes(),
+                "view_id": view["id"],
+                "yaw_degrees": view["yaw"],
+                "pitch_degrees": view["pitch"],
+            }
+            for output_path, view in zip(output_paths, views)
+        ]
+
+    return {
+        "frames": preview_frames,
+        "timestamp_seconds": timestamp_seconds,
+        "horizontal_coverage": horizontal_coverage,
+        "horizontal_coverage_degrees": horizontal_coverage_degrees,
+        "front_yaw_degrees": normalise_yaw_degrees(front_yaw_degrees),
+    }, None
 
 
 def _serialise_command(command):
@@ -357,6 +635,9 @@ def _generate_metadata_for_images(
     interval_seconds,
     fov,
     resolution,
+    horizontal_coverage="full_360",
+    front_yaw_degrees=0,
+    horizontal_coverage_degrees=360,
 ):
     filename_pattern = re.compile(
         rf"^{re.escape(prefix)}_(\d+)_view_(\d+)_"
@@ -383,6 +664,9 @@ def _generate_metadata_for_images(
             "index": view_idx,
             "yaw": view["yaw"],
             "pitch": view["pitch"],
+            "horizontal_coverage": horizontal_coverage,
+            "horizontal_coverage_degrees": horizontal_coverage_degrees,
+            "front_reference_yaw_degrees": front_yaw_degrees,
         }
         yaml_path = Path(output_dir) / f"{image_path.stem}.yaml"
         generate_frame_metadata_yaml(
@@ -471,16 +755,23 @@ def extract_360_frames(
     fov,
     resolution,
     st_progress,
-    st_text
+    st_text,
+    horizontal_coverage="full_360",
+    front_yaw_degrees=0,
+    write_yaml_metadata=True,
+    horizontal_coverage_degrees=180,
 ):
     """
-    Generates multi-view perspective extractions and writes structured
+    Generates multi-view perspective extractions and optionally writes structured
     sidecar metadata (.yaml) files for every extracted frame view.
     Updates the Streamlit UI with progress instead of the terminal.
     """
     if not os.path.exists(video_path):
         st_text.error(f"Input video not found: {video_path}")
         return False
+
+    if horizontal_coverage == "full_360":
+        horizontal_coverage_degrees = 360
 
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -508,29 +799,29 @@ def extract_360_frames(
         return False
 
     # 1. Setup Camera Rig Angle Views
-    views = []
-    angle_step = 360 / num_horizontal_views
-
-    for i in range(num_horizontal_views):
-        yaw = i * angle_step
-        if yaw > 180:
-            yaw -= 360
-
-        safe_yaw = str(int(yaw)).replace("-", "m")
-        views.append({"id": f"Horiz_{safe_yaw}", "yaw": int(yaw), "pitch": 0})
-
-        if include_45_pitch:
-            views.append({"id": f"Up45_{safe_yaw}", "yaw": int(yaw), "pitch": 45})
-            views.append({"id": f"Down45_{safe_yaw}", "yaw": int(yaw), "pitch": -45})
-
-    if include_up_down:
-        views.append({"id": "Zenith_90", "yaw": 0, "pitch": 90})
+    try:
+        views = build_camera_views(
+            num_horizontal_views,
+            include_up_down,
+            include_45_pitch,
+            horizontal_coverage,
+            front_yaw_degrees,
+            horizontal_coverage_degrees,
+            fov,
+        )
+    except ValueError as exc:
+        st_text.error(f"Invalid camera coverage settings: {exc}")
+        return False
 
     total_views = len(views)
 
     # 2. Fetch Video Metadata
     total_duration = get_video_duration(video_path, ffprobe_path)
-    video_start_time = get_video_creation_time(video_path, ffprobe_path)
+    video_start_time = (
+        get_video_creation_time(video_path, ffprobe_path)
+        if write_yaml_metadata
+        else None
+    )
 
     if not total_duration:
         st_text.error(
@@ -550,13 +841,22 @@ def extract_360_frames(
     print("        PRE-EXTRACTION CONFIGURATION SUMMARY     ")
     print("=" * 50)
     print(f"Target Video    : {os.path.basename(video_path)}")
-    print(f"Start Time      : {video_start_time}")
+    print(
+        "Start Time      : "
+        f"{video_start_time if write_yaml_metadata else 'not requested (YAML disabled)'}"
+    )
     print(
         f"Video Duration  : {f'{total_duration:.2f} seconds' if total_duration else 'Unknown'}"
     )
     print(
         f"Sample Rate     : {sampling_fps:.3g} fps "
         f"(every {interval_seconds:.3g} seconds)"
+    )
+    print(f"Coverage        : {horizontal_coverage}")
+    print(f"Coverage Width  : {horizontal_coverage_degrees:g} degrees")
+    print(
+        "Front Reference : yaw "
+        f"{normalise_yaw_degrees(front_yaw_degrees):g} degrees"
     )
     print(f"Total Angles    : {total_views} viewpoints per timestamp")
     print(f"Est. Images Out : ~{total_expected_images} total .png files")
@@ -735,24 +1035,31 @@ def extract_360_frames(
         )
         return False
 
-    st_text.text("Generating metadata for verified images...")
-    try:
-        metadata_count = _generate_metadata_for_images(
-            committed_images,
-            output_dir,
-            prefix,
-            views,
-            video_start_time,
-            interval_seconds,
-            fov,
-            resolution,
-        )
-    except (OSError, yaml.YAMLError) as exc:
-        st_text.error(
-            f"Images were extracted, but metadata generation failed: {exc}. "
-            "No metadata file is created without a matching image."
-        )
-        return False
+    metadata_count = 0
+    if write_yaml_metadata:
+        st_text.text("Generating metadata for verified images...")
+        try:
+            metadata_count = _generate_metadata_for_images(
+                committed_images,
+                output_dir,
+                prefix,
+                views,
+                video_start_time,
+                interval_seconds,
+                fov,
+                resolution,
+                horizontal_coverage,
+                normalise_yaw_degrees(front_yaw_degrees),
+                horizontal_coverage_degrees,
+            )
+        except (OSError, yaml.YAMLError) as exc:
+            st_text.error(
+                f"Images were extracted, but metadata generation failed: {exc}. "
+                "No metadata file is created without a matching image."
+            )
+            return False
+    else:
+        st_text.text("YAML sidecar output is disabled; keeping PNG images only...")
 
     _remove_orphan_metadata(output_dir, prefix)
     try:
@@ -762,8 +1069,11 @@ def extract_360_frames(
 
     # Complete the UI elements
     st_progress.progress(1.0)
-    st_text.success(
-        f"Extraction complete: {len(committed_images)} images and "
-        f"{metadata_count} metadata files saved to {output_dir}"
-    )
+    if write_yaml_metadata:
+        result_summary = (
+            f"{len(committed_images)} images and {metadata_count} metadata files"
+        )
+    else:
+        result_summary = f"{len(committed_images)} images (YAML output disabled)"
+    st_text.success(f"Extraction complete: {result_summary} saved to {output_dir}")
     return True

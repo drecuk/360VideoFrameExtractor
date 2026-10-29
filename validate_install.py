@@ -113,6 +113,62 @@ def check_visualisation() -> list[str]:
         return ["camera-visualisation"]
 
 
+def check_camera_coverage() -> list[str]:
+    try:
+        from utils_ffmpeg import (
+            build_camera_views,
+            calculate_horizontal_view_count,
+            normalise_yaw_degrees,
+        )
+
+        view_count = calculate_horizontal_view_count(
+            coverage_degrees=90,
+            view_fov_degrees=60,
+            overlap_percent=65,
+        )
+        if view_count != 3:
+            raise RuntimeError(
+                f"90°/60°/65% should calculate 3 views, got {view_count}"
+            )
+
+        front_views = build_camera_views(
+            view_count,
+            include_up_down=False,
+            include_45_pitch=False,
+            horizontal_coverage="front_window",
+            front_yaw_degrees=0,
+            horizontal_coverage_degrees=90,
+            view_fov_degrees=60,
+        )
+        back_views = build_camera_views(
+            view_count,
+            include_up_down=False,
+            include_45_pitch=False,
+            horizontal_coverage="back_window",
+            front_yaw_degrees=0,
+            horizontal_coverage_degrees=90,
+            view_fov_degrees=60,
+        )
+        if len(front_views) != 3 or len(back_views) != 3:
+            raise RuntimeError("subject-window view count mismatch")
+
+        if abs((front_views[0]["yaw"] - 30) - (-45)) > 1e-6:
+            raise RuntimeError("front window starts outside the requested -45° edge")
+        if abs((front_views[-1]["yaw"] + 30) - 45) > 1e-6:
+            raise RuntimeError("front window ends outside the requested +45° edge")
+
+        for front_view, back_view in zip(front_views, back_views):
+            expected_back = normalise_yaw_degrees(front_view["yaw"] + 180)
+            if abs(normalise_yaw_degrees(back_view["yaw"] - expected_back)) > 1e-6:
+                raise RuntimeError("back coverage is not opposite front coverage")
+
+        print("[OK] Contained front/back subject-window camera coverage")
+        return []
+    except Exception as exc:
+        print(f"[FAILED] Camera coverage: {exc}")
+        return ["camera-coverage"]
+
+
 def check_yaml_metadata() -> list[str]:
     try:
         from util_read_yaml import read_frame_metadata
@@ -130,6 +186,9 @@ def check_yaml_metadata() -> list[str]:
                     "index": 0,
                     "yaw": 0,
                     "pitch": 0,
+                    "horizontal_coverage": "front_window",
+                    "horizontal_coverage_degrees": 90,
+                    "front_reference_yaw_degrees": 15,
                 },
                 fov=90,
                 resolution=1024,
@@ -138,6 +197,12 @@ def check_yaml_metadata() -> list[str]:
             metadata = read_frame_metadata(yaml_path, print_summary=False)
             if metadata["camera_spatial"]["view_id"] != "Horiz_0":
                 raise RuntimeError("YAML metadata view ID mismatch")
+            if metadata["camera_spatial"]["horizontal_coverage"] != "front_window":
+                raise RuntimeError("YAML metadata coverage mismatch")
+            if metadata["camera_spatial"]["horizontal_coverage_degrees"] != 90:
+                raise RuntimeError("YAML metadata coverage angle mismatch")
+            if metadata["camera_spatial"]["front_reference_yaw_degrees"] != 15:
+                raise RuntimeError("YAML metadata front-reference yaw mismatch")
 
         print("[OK] YAML sidecar metadata generation and reading")
         return []
@@ -246,6 +311,7 @@ def main() -> int:
 
     print("\nApplication smoke test")
     smoke_missing = check_visualisation()
+    smoke_missing.extend(check_camera_coverage())
     smoke_missing.extend(check_yaml_metadata())
     smoke_missing.extend(check_thumbnail_generation())
     smoke_missing.extend(check_workspace_selection())

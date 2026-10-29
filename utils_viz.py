@@ -17,6 +17,7 @@
 
 import numpy as np
 import plotly.graph_objects as go
+from utils_ffmpeg import build_camera_views, normalise_yaw_degrees
 
 def generate_360_splits(
     EXTRACT_EVERY_N_SECONDS=2,
@@ -24,11 +25,16 @@ def generate_360_splits(
     INCLUDE_NADIR_ZENITH=True,
     INCLUDE_45_PITCH=True,
     FIELD_OF_VIEW=90,
-    IMAGE_RESOLUTION=1024
+    IMAGE_RESOLUTION=1024,
+    HORIZONTAL_COVERAGE="full_360",
+    FRONT_YAW_DEGREES=0,
+    HORIZONTAL_COVERAGE_DEGREES=180,
 ):
     """
     Renders an interactive 3D visualization of the camera rig layout.
     """
+    if HORIZONTAL_COVERAGE == "full_360":
+        HORIZONTAL_COVERAGE_DEGREES = 360
 
     # --------------------------- CREATE 3D FIGURE
     # initialise an empty Plotly figure for the camera rig
@@ -54,30 +60,35 @@ def generate_360_splits(
     fig.add_trace(go.Surface(x=x, y=y, z=z, opacity=0.15, colorscale='Blues', showscale=False, name='360 Sphere'))
 
     # --------------------------- CREATE VIEW LAYOUT
-    # initialise the list containing all camera yaw and pitch angles
-    views = []
+    # Use the same view builder as the FFmpeg extraction pipeline so the
+    # visualisation always matches the files that will be produced.
+    camera_views = build_camera_views(
+        HORIZONTAL_SPLITS,
+        INCLUDE_NADIR_ZENITH,
+        INCLUDE_45_PITCH,
+        HORIZONTAL_COVERAGE,
+        FRONT_YAW_DEGREES,
+        HORIZONTAL_COVERAGE_DEGREES,
+        FIELD_OF_VIEW,
+    )
+    views = [(view["yaw"], view["pitch"]) for view in camera_views]
 
-    # calculate the angle between each horizontal camera view
-    angle_step = 360 / HORIZONTAL_SPLITS
-
-    # distribute camera views evenly around the horizontal axis
-    for i in range(HORIZONTAL_SPLITS):
-        yaw = i * angle_step
-
-        # convert yaw angles above 180 into negative angles
-        if yaw > 180: yaw -= 360
-
-        # add a horizontal camera view
-        views.append((yaw, 0)) # Horizontal
-
-        # add upward and downward 45-degree views when requested
-        if INCLUDE_45_PITCH:
-            views.append((yaw, 45))  # Up 45
-            views.append((yaw, -45)) # Down 45
-
-    # add a view looking directly upward when requested
-    if INCLUDE_NADIR_ZENITH:
-        views.extend([(0, 90)]) # Zenith
+    # Draw the user-defined front direction and its exact opposite. These are
+    # references within the stitched MP4, not automatically detected lenses.
+    front_yaw = np.radians(normalise_yaw_degrees(FRONT_YAW_DEGREES))
+    reference_length = 2.1
+    front_x = reference_length * np.cos(front_yaw)
+    front_y = reference_length * np.sin(front_yaw)
+    fig.add_trace(go.Scatter3d(
+        x=[0, front_x], y=[0, front_y], z=[0, 0], mode="lines+text",
+        line=dict(color="cyan", width=7), text=["", "Front reference"],
+        textposition="top center", name="Front reference"
+    ))
+    fig.add_trace(go.Scatter3d(
+        x=[0, -front_x], y=[0, -front_y], z=[0, 0], mode="lines+text",
+        line=dict(color="orange", width=7), text=["", "Back reference"],
+        textposition="top center", name="Back reference"
+    ))
 
     # --------------------------- CALCULATE IMAGE PLANE
     # convert the field of view from degrees into radians
@@ -159,7 +170,15 @@ def generate_360_splits(
     # --------------------------- CONFIGURE LAYOUT
     # set the title, scene dimensions, axis ranges and legend position
     fig.update_layout(
-        title=dict(text=f"Dense Camera 360° Rig Simulator<br><sup>Total Views: {len(views)} | FOV: {FIELD_OF_VIEW}°</sup>", x=0.5),
+        title=dict(
+            text=(
+                "Camera View Simulator"
+                f"<br><sup>Coverage: {HORIZONTAL_COVERAGE} "
+                f"({HORIZONTAL_COVERAGE_DEGREES}°) | "
+                f"Total Views: {len(views)} | FOV: {FIELD_OF_VIEW}°</sup>"
+            ),
+            x=0.5,
+        ),
         width=800, height=800,
         scene=dict(
             xaxis=dict(range=[-axis_range, axis_range], visible=False),
