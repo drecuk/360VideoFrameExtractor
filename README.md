@@ -4,15 +4,88 @@
 
 ## About
 
-360VideoFrameExtractor is a Streamlit web application for extracting perspective frames from equirectangular 360-degree videos and processing the resulting photographs. It has been tested with Insta360 series devices.
+360VideoFrameExtractor is a Streamlit application that converts stitched 2:1 equirectangular 360° video into configurable, overlapping perspective images for photogrammetry, Structure-from-Motion, 3D Gaussian Splatting, Neural Radiance Fields, and cultural-heritage documentation. It has been tested with Insta360 X-series cameras.
 
-The application provides interactive camera-layout visualisation, single and batch extraction, sky-content filtering, and partial-blur detection. FFmpeg and FFprobe are used for video processing, while COLMAP is checked as part of the wider 3D reconstruction workflow.
+The extractor uses FFmpeg's `v360` projection to generate conventional perspective PNG photographs from panoramic video. Optional YAML sidecars preserve each image's source time, yaw, pitch, field of view, resolution, projection, and extraction configuration so that datasets can be traced and reproduced.
+
+The application provides interactive camera-layout visualisation, single and batch extraction, subject-focused or complete-environment coverage, sky-content filtering, and partial-blur detection. COLMAP is checked as part of the wider reconstruction workflow, but this application does not itself estimate camera poses or create the final 3D model.
+
+![360 Video Extraction Toolkit interface](docs/images/360FramesExtractor.png)
+
+## Why This Tool Exists
+
+360° cameras provide a rapid and accessible way to document monuments, buildings, archaeological sites, museum objects, and other cultural-heritage subjects. Most photogrammetry, Structure-from-Motion, NeRF, and 3D Gaussian Splatting pipelines, however, expect conventional perspective photographs rather than equirectangular panoramas.
+
+360VideoFrameExtractor bridges this gap by turning a continuous 360° recording into overlapping perspective views suitable for downstream feature matching, camera alignment, reconstruction, visualisation, and archival documentation. It supports two complementary survey strategies:
+
+- **Complete-environment documentation** extracts views around the full panorama for rooms, sites, streets, landscapes, and other surrounding environments.
+- **Object and monument documentation** restricts extraction to an adjustable camera-facing window, reducing irrelevant rear-facing images when scanning a sculpture, facade, building, or other discrete subject.
+
+The resulting images and metadata are intended for downstream use in:
+
+- Photogrammetric camera alignment and dense reconstruction.
+- COLMAP and other Structure-from-Motion pipelines.
+- 3D Gaussian Splatting and Neural Radiance Field training.
+- Object, sculpture, monument, facade, room, landscape, and site documentation.
+- Reproducible heritage-imaging and computer-vision research.
+- Future semantic masking, inpainting, and transient-object-removal workflows.
+
+The application performs frame extraction, perspective-view generation, metadata creation, and image-quality filtering. Reconstruction remains the responsibility of downstream software such as COLMAP, Nerfstudio, Postshot, or another photogrammetry or neural-rendering pipeline.
+
+## Technical and Research Pipeline
+
+```mermaid
+flowchart LR
+    A[Insta360 INSV recording] --> B[Insta360 Studio]
+    B --> C[2:1 equirectangular MP4]
+    C --> D[360VideoFrameExtractor]
+    D --> E[Overlapping perspective PNGs]
+    D --> F[Optional YAML metadata]
+    E --> G[COLMAP / Photogrammetry]
+    E --> H[3D Gaussian Splatting]
+    E --> I[NeRF]
+    F --> G
+    F --> H
+    F --> I
+    G --> J[Heritage documentation and visualisation]
+    H --> J
+    I --> J
+```
+
+This repository implements the dataset-preparation stage between panoramic capture and reconstruction. Raw `.insv` recordings must first be stitched and exported as a standard 2:1 equirectangular video; the application then samples time and projects the panorama into overlapping perspective photographs.
+
+## Research Context and Citation
 
 The frame extractor is used for work presented in the following accepted paper:
 
 > Ch'ng, E. (2026). Analysis of Multi-Modal Semantic Masking, Inpainting for 3D Reconstruction and Visualisation of Heritage Sites. In *Proceedings of the 23rd Eurographics Workshop on Graphics and Cultural Heritage (GCH 2026)*, Universitat Politècnica de Catalunya, Barcelona, Catalonia, 2–5 November 2026. Accepted paper.
 
-![360 Video Extraction Toolkit interface](docs/images/360FramesExtractor.png)
+To cite the software, use the repository's machine-readable [CITATION.cff](CITATION.cff) file or the following BibTeX entry:
+
+```bibtex
+@software{chng_360videoframeextractor_2026,
+  author  = {Ch'ng, Eugene},
+  title   = {360VideoFrameExtractor},
+  year    = {2026},
+  url     = {https://github.com/drecuk/360VideoFrameExtractor},
+  license = {MIT},
+  note    = {Perspective-frame extraction from 360-degree video for photogrammetry, 3D reconstruction, and heritage documentation}
+}
+```
+
+To cite the related research context:
+
+```bibtex
+@inproceedings{chng_2026_multimodal_masking,
+  author    = {Ch'ng, Eugene},
+  title     = {Analysis of Multi-Modal Semantic Masking, Inpainting for 3D Reconstruction and Visualisation of Heritage Sites},
+  booktitle = {Proceedings of the 23rd Eurographics Workshop on Graphics and Cultural Heritage (GCH 2026)},
+  year      = {2026},
+  address   = {Barcelona, Catalonia},
+  month     = nov,
+  note      = {Accepted paper}
+}
+```
 
 ## Author
 
@@ -46,6 +119,15 @@ The frame extractor is used for work presented in the following accepted paper:
 ### Preparing Footage for 3D Gaussian Splatting, NeRF, and Photogrammetry
 
 Use the following Insta360 Studio export settings before processing footage with this application or a structure-from-motion workflow.
+
+### Choose the Survey Workflow Before Export
+
+Stabilisation settings depend on the intended reconstruction rather than on a single universal export rule:
+
+- **Complete-environment reconstruction:** Test with FlowState Stabilisation and horizon correction off first. This prioritises consistent image geometry when extracting the complete panorama around rooms, landscapes, streets, and heritage sites.
+- **Object or monument reconstruction:** Use **FlowState Stabilisation ON** with **Direction Lock ON**. Direction Lock keeps the stitched panorama aligned with the camera's physical facing direction, allowing a fixed front subject window to follow the object while the operator moves around it.
+
+For either workflow, avoid keyframes, reframing, automatic camera movements, and subject tracking. Export a complete 2:1 **360 Video** rather than a flat reframed video, and inspect sample frames from the beginning, middle, and end before processing the entire recording.
 
 ### Insta360 X5 and X6 Recommended Export Settings for Photogrammetry
 
@@ -582,6 +664,20 @@ python3 -m venv .venv
 
 On Windows, use `.venv\Scripts\python.exe` in place of `.venv/bin/python`.
 
+## Implementation Guide for Developers and AI Agents
+
+| Research or workflow concern | Primary implementation | Role in the pipeline |
+| --- | --- | --- |
+| Application workflow and parameter selection | `app.py` | Coordinates workspace selection, video choice, extraction geometry, previews, batch processing, and review tabs. |
+| Equirectangular-to-perspective projection | `utils_ffmpeg.py` | Builds FFmpeg `v360` filters, samples video frames, writes perspective PNGs, and generates optional YAML sidecars. |
+| Camera-layout and coverage validation | `utils_viz.py` | Visualises horizontal, pitched, zenith, full-360°, and subject-window camera directions before extraction. |
+| Reproducibility metadata | `utils_ffmpeg.py`, `util_read_yaml.py` | Records and reads view direction, FOV, projection, source timing, coverage mode, and processing placeholders. |
+| Image-quality screening | `util_detectsky.py`, `util_detectblurry.py` | Identifies sky-dominated and partially blurred images for human review before reconstruction. |
+| Cross-platform data access | `utils_workspace.py`, `utils_images.py`, `utils_os.py` | Supports internal or external-drive workspaces, reliable thumbnails, and native operating-system integration. |
+| Environment verification | `validate_install.py`, `utils_checksys.py` | Checks Python dependencies, project assets, FFmpeg/FFprobe, the `v360` filter, and COLMAP availability. |
+
+When extending the project, preserve the distinction between **dataset preparation** and **3D reconstruction**. This repository should produce traceable perspective-image datasets; pose estimation, sparse or dense reconstruction, neural training, and final heritage visualisation belong to downstream tools unless explicitly introduced as a new pipeline stage.
+
 ## Validation
 
 Run the installation checker without starting Streamlit:
@@ -608,6 +704,7 @@ The validator checks Python modules, required project assets, camera visualisati
 |-- utils_workspace.py        Local and external-drive workspace handling
 |-- logo/logo.png             Application logo
 |-- .streamlit/config.toml    Streamlit upload configuration
+|-- CITATION.cff              Software and related-paper citation metadata
 |-- requirements.txt          Python dependencies
 |-- install_windows.bat       Beginner Windows installer
 |-- run_windows.bat           Beginner Windows launcher

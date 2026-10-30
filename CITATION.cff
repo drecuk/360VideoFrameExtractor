@@ -1,0 +1,44 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite 360VideoFrameExtractor and the related
+  research paper listed in this file.
+title: 360VideoFrameExtractor
+type: software
+authors:
+  - family-names: "Ch'ng"
+    given-names: Eugene
+    email: eugenecc@gmail.com
+repository-code: https://github.com/drecuk/360VideoFrameExtractor
+url: https://github.com/drecuk/360VideoFrameExtractor
+license: MIT
+abstract: >-
+  A Streamlit application that converts stitched equirectangular 360-degree
+  video into overlapping perspective images and optional YAML metadata for
+  photogrammetry, Structure-from-Motion, 3D Gaussian Splatting, Neural
+  Radiance Fields, and cultural-heritage documentation.
+keywords:
+  - 360 video
+  - photogrammetry
+  - 3D reconstruction
+  - cultural heritage
+  - heritage documentation
+  - Structure-from-Motion
+  - 3D Gaussian Splatting
+  - Neural Radiance Fields
+  - FFmpeg
+  - COLMAP
+references:
+  - type: conference-paper
+    authors:
+      - family-names: "Ch'ng"
+        given-names: Eugene
+    title: >-
+      Analysis of Multi-Modal Semantic Masking, Inpainting for 3D
+      Reconstruction and Visualisation of Heritage Sites
+    collection-title: >-
+      Proceedings of the 23rd Eurographics Workshop on Graphics and Cultural
+      Heritage (GCH 2026)
+    year: 2026
+    notes: >-
+      Accepted paper. Universitat Politècnica de Catalunya, Barcelona,
+      Catalonia, 2-5 November 2026.
