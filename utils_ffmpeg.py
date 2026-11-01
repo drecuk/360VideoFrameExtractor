@@ -11,6 +11,8 @@ from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from utils_workspace import is_hidden_or_system_path
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 FFMPEG_PATH_FILE = PROJECT_ROOT / ".ffmpeg_path"
@@ -22,6 +24,9 @@ HORIZONTAL_COVERAGE_MODES = {
     "back_180",
 }
 PREVIEW_VIEW_BATCH_SIZE = 24
+MIN_PERSPECTIVE_RESOLUTION = 512
+RECOMMENDED_PERSPECTIVE_RESOLUTION = 2048
+MAX_PERSPECTIVE_RESOLUTION = 4096
 FFMPEG_PROGRESS_KEYS = {
     "bitrate",
     "drop_frames",
@@ -591,6 +596,15 @@ def _is_complete_png(image_path):
         return False
 
 
+def _list_staged_pngs(staging_dir):
+    """List real staged PNGs without macOS AppleDouble/system sidecars."""
+    return sorted(
+        path
+        for path in Path(staging_dir).glob("*.png")
+        if path.is_file() and not is_hidden_or_system_path(path)
+    )
+
+
 def _has_complete_view_groups(image_paths, prefix, total_views):
     filename_pattern = re.compile(
         rf"^{re.escape(prefix)}_(\d+)_view_(\d+)_"
@@ -768,6 +782,22 @@ def extract_360_frames(
     """
     if not os.path.exists(video_path):
         st_text.error(f"Input video not found: {video_path}")
+        return False
+
+    try:
+        resolution = int(resolution)
+    except (TypeError, ValueError):
+        st_text.error("Image resolution must be a whole number of pixels.")
+        return False
+
+    if not MIN_PERSPECTIVE_RESOLUTION <= resolution <= MAX_PERSPECTIVE_RESOLUTION:
+        st_text.error(
+            "Perspective image resolution must be between "
+            f"{MIN_PERSPECTIVE_RESOLUTION} and {MAX_PERSPECTIVE_RESOLUTION} pixels. "
+            f"Use {RECOMMENDED_PERSPECTIVE_RESOLUTION} for normal photogrammetry; "
+            "the limit applies to each extracted square view, not to the source "
+            "equirectangular video's resolution."
+        )
         return False
 
     if horizontal_coverage == "full_360":
@@ -982,7 +1012,10 @@ def extract_360_frames(
         diagnostic_log.close()
 
     return_code = process.wait()
-    staged_images = sorted(staging_dir.glob("*.png"))
+    # External drives on macOS may create one `._*.png` AppleDouble sidecar for
+    # every real image. Those files contain filesystem metadata rather than PNG
+    # data and must not participate in image-integrity or view-group checks.
+    staged_images = _list_staged_pngs(staging_dir)
     incomplete_images = [
         image_path for image_path in staged_images if not _is_complete_png(image_path)
     ]

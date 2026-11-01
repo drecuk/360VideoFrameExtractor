@@ -116,10 +116,20 @@ def check_visualisation() -> list[str]:
 def check_camera_coverage() -> list[str]:
     try:
         from utils_ffmpeg import (
+            MAX_PERSPECTIVE_RESOLUTION,
+            MIN_PERSPECTIVE_RESOLUTION,
+            RECOMMENDED_PERSPECTIVE_RESOLUTION,
             build_camera_views,
             calculate_horizontal_view_count,
             normalise_yaw_degrees,
         )
+
+        if (
+            MIN_PERSPECTIVE_RESOLUTION != 512
+            or RECOMMENDED_PERSPECTIVE_RESOLUTION != 2048
+            or MAX_PERSPECTIVE_RESOLUTION != 4096
+        ):
+            raise RuntimeError("perspective-image resolution limits are incorrect")
 
         view_count = calculate_horizontal_view_count(
             coverage_degrees=90,
@@ -162,7 +172,10 @@ def check_camera_coverage() -> list[str]:
             if abs(normalise_yaw_degrees(back_view["yaw"] - expected_back)) > 1e-6:
                 raise RuntimeError("back coverage is not opposite front coverage")
 
-        print("[OK] Contained front/back subject-window camera coverage")
+        print(
+            "[OK] Contained front/back subject-window camera coverage and "
+            "512-4096 perspective-image resolution limit"
+        )
         return []
     except Exception as exc:
         print(f"[FAILED] Camera coverage: {exc}")
@@ -234,6 +247,31 @@ def check_thumbnail_generation() -> list[str]:
     except Exception as exc:
         print(f"[FAILED] Thumbnail generation: {exc}")
         return ["thumbnail-generation"]
+
+
+def check_staged_png_filtering() -> list[str]:
+    try:
+        from PIL import Image
+        from utils_ffmpeg import _is_complete_png, _list_staged_pngs
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            staging_dir = Path(tmp_dir)
+            image_path = staging_dir / "frame_0001_view_00_Horiz_0.png"
+            apple_double_path = staging_dir / "._frame_0001_view_00_Horiz_0.png"
+            Image.new("RGB", (32, 32), (20, 80, 140)).save(image_path)
+            apple_double_path.write_bytes(b"AppleDouble metadata, not PNG data")
+
+            staged_images = _list_staged_pngs(staging_dir)
+            if staged_images != [image_path]:
+                raise RuntimeError("AppleDouble PNG sidecar was not excluded")
+            if not _is_complete_png(image_path):
+                raise RuntimeError("valid staged PNG failed its integrity check")
+
+        print("[OK] Staged PNG integrity check excludes AppleDouble sidecars")
+        return []
+    except Exception as exc:
+        print(f"[FAILED] Staged PNG filtering: {exc}")
+        return ["staged-png-filtering"]
 
 
 def check_workspace_selection() -> list[str]:
@@ -314,6 +352,7 @@ def main() -> int:
     smoke_missing.extend(check_camera_coverage())
     smoke_missing.extend(check_yaml_metadata())
     smoke_missing.extend(check_thumbnail_generation())
+    smoke_missing.extend(check_staged_png_filtering())
     smoke_missing.extend(check_workspace_selection())
 
     print("\nExternal tools")

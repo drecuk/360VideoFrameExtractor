@@ -23,6 +23,9 @@ import tempfile
 from pathlib import Path
 from utils_viz import generate_360_splits
 from utils_ffmpeg import (
+    MAX_PERSPECTIVE_RESOLUTION,
+    MIN_PERSPECTIVE_RESOLUTION,
+    RECOMMENDED_PERSPECTIVE_RESOLUTION,
     calculate_horizontal_view_count,
     create_extraction_preview_bytes,
     extract_360_frames,
@@ -1001,7 +1004,23 @@ def render_extraction_tab():
                 "surroundings; use the automatic sample frames to verify the result."
             )
 
-        res = st.slider("IMAGE_RESOLUTION", 512, 8192, 1024, step=256)
+        res = st.slider(
+            "IMAGE_RESOLUTION",
+            min_value=MIN_PERSPECTIVE_RESOLUTION,
+            max_value=MAX_PERSPECTIVE_RESOLUTION,
+            value=RECOMMENDED_PERSPECTIVE_RESOLUTION,
+            step=256,
+            help=(
+                "Square pixel resolution of each extracted perspective PNG, not "
+                "the source panorama. 2048 is recommended for normal 8K 360° "
+                "footage; 4096 is the memory-safe application limit."
+            ),
+        )
+        st.caption(
+            "Perspective output: **2048×2048 recommended** · **4096×4096 "
+            "maximum**. An 8K equirectangular source does not require an "
+            "8192×8192 image for every view."
+        )
 
         # --------------------------- FIND AVAILABLE VIDEOS
         # load supported videos from the active workspace

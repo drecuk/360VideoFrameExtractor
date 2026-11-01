@@ -214,6 +214,12 @@ When a supported video is selected, the application automatically renders the co
 
 Full 360° mode retains its manual horizontal-view-count and 90° field-of-view controls. Front and back subject runs are written to separate `cubemap-*` folders whose names include the selected window, field of view, calculated horizontal-view count, and front-reference yaw. Each YAML sidecar records the coverage mode, exact coverage angle, and front-reference yaw.
 
+### Perspective Image Resolution
+
+**IMAGE_RESOLUTION** controls each extracted square perspective PNG; it does not control the resolution of the source equirectangular video. The application accepts **512×512 to 4096×4096**, with **2048×2048** as the recommended default for normal photogrammetry from an 8K 360° source.
+
+The 4096×4096 ceiling prevents a multi-view FFmpeg process from allocating many simultaneous 8192×8192 frame buffers. Selecting 8192 for every output view would substantially upscale a 90° section of a 7680-pixel-wide panorama without recovering additional camera detail, while potentially exhausting system memory. Use 4096 only when deliberate oversampling is useful; otherwise retain the 2048 default.
+
 ### Optional YAML Sidecar Files
 
 The **CREATE_YAML_SIDECAR_FILES** checkbox appears immediately above **Extract Selected** and **Batch Extract All**. It is enabled by default. When enabled, every PNG receives a same-named `.yaml` file containing:
@@ -726,6 +732,8 @@ The **Upload** tab starts with `uploaded_videos/` as its default workspace. Clic
 When **Use videos already in this directory** is selected, the app reads supported videos directly from that directory; it does not copy them through the browser. Extracted `cubemap-*` folders are created alongside the source videos, and the sky, blur, and metadata tabs use the same active workspace. The selected path lasts for the current app session and returns to the project folder when the app is restarted.
 
 Before a video appears in Upload or Extraction, the app excludes hidden and operating-system files—including macOS AppleDouble files such as `._VID_20261015_140314_00_131.mp4`—and asks FFprobe to confirm that the file contains a readable video stream. Files that merely have a video extension but cannot be read are listed under **Show ignored files** and are never included in individual or batch extraction. The image-processing tabs apply the same hidden/system-file filtering to extracted photographs.
+
+When macOS writes extracted PNGs to some external-drive formats, it may create a hidden `._*.png` AppleDouble metadata sidecar beside every photograph. Extraction integrity checks ignore these sidecars and validate only the real PNG files.
 
 The default `uploaded_videos/` contents are excluded from Git so large videos and generated images are not accidentally committed to GitHub. Files in a separately selected workspace are outside the repository and are therefore not part of Git either.
 
